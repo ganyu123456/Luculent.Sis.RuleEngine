@@ -16,7 +16,7 @@ services:
       - disabled
 
   master:
-    image: ruleengine-master:local
+    image: harbor.zkjgy.online/library/ruleengine-master:latest
     build: !reset {}
     depends_on: !reset {}
     environment:
@@ -31,7 +31,7 @@ services:
       - sis_net
 
   worker:
-    image: ruleengine-worker:local
+    image: harbor.zkjgy.online/library/ruleengine-worker:latest
     build: !reset
       context: .
       dockerfile: src/Luculent.Sis.RuleEngine.Worker/Dockerfile
