@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Luculent.Sis.RuleEngine.Master</RootNamespace>
+    <AssemblyName>Luculent.Sis.RuleEngine.Master</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Luculent.Sis.RuleEngine.Shared\Luculent.Sis.RuleEngine.Shared.csproj" />
+    <ProjectReference Include="..\Luculent.Sis.RuleEngine.Worker\Luculent.Sis.RuleEngine.Worker.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Luculent.Sis.RuleEngine.Worker</RootNamespace>
+    <AssemblyName>Luculent.Sis.RuleEngine.Worker</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Luculent.Sis.RuleEngine.Shared\Luculent.Sis.RuleEngine.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

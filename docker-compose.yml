@@ -1,0 +1,134 @@
+version: "3.9"
+
+# ===== SIS RuleEngine 部署编排 =====
+# 启动命令:
+#   基础启动:        docker compose up -d
+#   横向扩展 Worker: docker compose up -d --scale worker=5
+#   缩容 Worker:     docker compose up -d --scale worker=3
+#   查看状态:        docker compose ps
+#   查看日志:        docker compose logs -f worker
+
+services:
+  # ========== Redis（实时报警 + Master 选主） ==========
+  redis:
+    image: redis:7-alpine
+    container_name: ruleengine-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy volatile-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ruleengine
+    restart: unless-stopped
+
+  # ========== ClickHouse（历史报警） ==========
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: ruleengine-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./deploy/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      CLICKHOUSE_DB: ruleengine
+      CLICKHOUSE_USER: ruleengine
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "-u", "ruleengine", "--password", "${CLICKHOUSE_PASSWORD:-RuleEngine2026!}", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ruleengine
+    restart: unless-stopped
+
+  # ========== Master（Control Plane） ==========
+  master:
+    build:
+      context: .
+      dockerfile: src/Luculent.Sis.RuleEngine.Master/Dockerfile
+    container_name: ruleengine-master
+    ports:
+      - "11081:11081"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://0.0.0.0:11081
+      - Redis__ConnectionString=redis:6379,password=${REDIS_PASSWORD:-}
+      - ClickHouse__ConnectionString=Host=clickhouse;Port=8123;Database=ruleengine;User=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
+      - Master__InstanceId=${HOSTNAME:-master-1}
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - ruleengine
+    restart: unless-stopped
+
+  # ========== Worker（Data Plane）— 可横向扩展 ==========
+  worker:
+    build:
+      context: .
+      dockerfile: src/Luculent.Sis.RuleEngine.Worker/Dockerfile
+    # 不指定 container_name，Docker Compose 自动生成 worker-1, worker-2, ...
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+      - Worker__WorkerId=${HOSTNAME:-worker-unknown}
+      - Worker__GrpcPort=50051
+      - Master__GrpcAddress=http://master:50051
+      - Redis__ConnectionString=redis:6379,password=${REDIS_PASSWORD:-}
+      - ClickHouse__ConnectionString=Host=clickhouse;Port=8123;Database=ruleengine;User=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
+    ports:
+      # 每个 Worker 映射不同端口：50051, 50052, 50053...
+      # Docker Compose 自动处理端口冲突
+      - "50051"
+    volumes:
+      # 每个 Worker 独立的 RocksDB 数据目录
+      - worker_rocksdb:/data/rocksdb
+    depends_on:
+      master:
+        condition: service_healthy
+    networks:
+      - ruleengine
+    restart: unless-stopped
+
+    # ===== 横向扩展配置 =====
+    deploy:
+      # 默认 3 副本（生产环境建议 3-10）
+      replicas: 3
+      resources:
+        limits:
+          cpus: "2"
+          memory: "2G"
+        reservations:
+          cpus: "1"
+          memory: "512M"
+
+# ===== 卷 =====
+volumes:
+  redis_data:
+    driver: local
+  clickhouse_data:
+    driver: local
+  worker_rocksdb:
+    driver: local
+
+# ===== 网络 =====
+networks:
+  ruleengine:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

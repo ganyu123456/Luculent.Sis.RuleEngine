@@ -1,0 +1,28 @@
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
+*.cache
+*.userprefs
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test results
+**/TestResults/
+**/coverage/
+
+# Docker
+docker-compose.override.yml
+
+# Local dev
+.env.local

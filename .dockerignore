@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+**/.git/
+**/.github/
+**/docs/
+**/*.md
+**/node_modules/
+**/.DS_Store
+**/TestResults/
+**/coverage/
+*.user
+*.suo
+*.cache
