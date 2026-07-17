@@ -19,13 +19,13 @@ public class MonitorConfig
     public List<MonitorStatusDefinition> MonitorStatusDefinitions { get; set; } = new();
 
     /// <summary>手动标志: 0=停止, 1=运行 (InterfaceMonitoring)</summary>
-    public int ManualFlag { get; set; } = 1;
+    public int? ManualFlag { get; set; }
 
     /// <summary>关联启停监视项 Key (InterfaceMonitoring)</summary>
     public string StopMonitorKey { get; set; } = string.Empty;
 
     /// <summary>故障判定计数阈值 (InterfaceMonitoring)</summary>
-    public int FailureCount { get; set; } = 5;
+    public int? FailureCount { get; set; }
 
     /// <summary>监视项数据源定义列表</summary>
     public List<MonitorSourceDefinition> MonitorSources { get; set; } = new();

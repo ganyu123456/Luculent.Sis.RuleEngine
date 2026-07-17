@@ -202,12 +202,13 @@ monitorGroup.MapPost("/on-changed", async (SyncDeltaRequest request,
     ConfigurationService config,
     PartitionService partition,
     WorkerManager workers,
-    MonitorCenterClient? monitorCenterClient,
+    HttpContext httpContext,
     ILogger<Program> logger) =>
 {
     logger.LogInformation("MonitorCenter 推送变更通知: +{Added} ~{Modified} -{Deleted}, 版本 {Version}",
         request.Added.Count, request.Modified.Count, request.Deleted.Count, request.Version);
 
+    var monitorCenterClient = httpContext.RequestServices.GetService<MonitorCenterClient>();
     if (monitorCenterClient != null)
     {
         try

@@ -40,7 +40,8 @@ public class MonitorCenterClient
             ? resultProp
             : root;
 
-        var monitors = JsonSerializer.Deserialize<List<MonitorConfig>>(items.GetRawText());
+        var monitors = JsonSerializer.Deserialize<List<MonitorConfig>>(items.GetRawText(),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         _logger.LogInformation("从 Monitor Center 拉取完成: {Count} 个监视项", monitors?.Count ?? 0);
 
         return monitors ?? new List<MonitorConfig>();

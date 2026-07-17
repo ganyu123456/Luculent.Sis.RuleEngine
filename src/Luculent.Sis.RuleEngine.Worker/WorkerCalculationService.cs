@@ -58,11 +58,41 @@ public class WorkerCalculationService : BackgroundService
                     continue;
                 }
 
-                // ① 收集所有需要读取的测点名称
+                // ① 收集所有需要读取的测点名称（MonitorConfig.TagName + 规则中的标签名）
                 var tagNames = AssignedMonitors.Values
                     .Select(m => m.TagName)
-                    .Distinct()
+                    .Where(t => !string.IsNullOrEmpty(t))
                     .ToList();
+
+                // 收集规则中引用的所有标签名（RangeDuration / WallTemperature / etc.）
+                foreach (var m in AssignedMonitors.Values)
+                {
+                    var ruleOpts = m.RuleOptions;
+                    if (ruleOpts?.RangeDurationRules != null)
+                        foreach (var r in ruleOpts.RangeDurationRules)
+                        {
+                            if (!string.IsNullOrEmpty(r.LeftTagName) && !tagNames.Contains(r.LeftTagName))
+                                tagNames.Add(r.LeftTagName);
+                            if (!string.IsNullOrEmpty(r.RightTagName) && !tagNames.Contains(r.RightTagName))
+                                tagNames.Add(r.RightTagName);
+                        }
+
+                    if (ruleOpts?.RangeFrequencyRules != null)
+                        foreach (var r in ruleOpts.RangeFrequencyRules)
+                        {
+                            if (!string.IsNullOrEmpty(r.LeftTagName) && !tagNames.Contains(r.LeftTagName))
+                                tagNames.Add(r.LeftTagName);
+                            if (!string.IsNullOrEmpty(r.RightTagName) && !tagNames.Contains(r.RightTagName))
+                                tagNames.Add(r.RightTagName);
+                        }
+
+                    if (!string.IsNullOrEmpty(ruleOpts?.WallTemperatureOpts?.TemperatureTag)
+                        && !tagNames.Contains(ruleOpts.WallTemperatureOpts.TemperatureTag))
+                        tagNames.Add(ruleOpts.WallTemperatureOpts.TemperatureTag);
+                    if (!string.IsNullOrEmpty(ruleOpts?.WallTemperatureOpts?.ReferenceTag)
+                        && !tagNames.Contains(ruleOpts.WallTemperatureOpts.ReferenceTag))
+                        tagNames.Add(ruleOpts.WallTemperatureOpts.ReferenceTag);
+                }
 
                 // ② 从 TrendDB 批量读取实时值
                 var values = await _trendReader.ReadBatchAsync(tagNames);
@@ -113,15 +143,15 @@ public class WorkerCalculationService : BackgroundService
                 {
                     await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
 
-                    var state = await _stateStore.GetAsync(monitor.Id);
-                    if (state?.PreviousStatus != null)
+                    var preruleState = await _stateStore.GetAsync(monitor.Id);
+                    if (preruleState?.PreviousStatus != null)
                     {
                         var clearEvent = new AlarmEvent
                         {
                             MonitorId = monitor.Id,
                             MonitorKey = monitor.Key,
                             MonitorName = monitor.Name,
-                            StatusKey = state.PreviousStatus,
+                            StatusKey = preruleState.PreviousStatus,
                             EventType = Shared.Enums.EventType.Clear,
                             OccurTime = now,
                             ClearTime = now,
@@ -137,6 +167,7 @@ public class WorkerCalculationService : BackgroundService
 
             // ② 规则计算 (对标 MonitorCenter RuleCalculate 阶段)
             var result = await _dispatcher.CalculateAsync(monitor, values, now);
+            var state = await _stateStore.GetAsync(monitor.Id);
 
             // 处理多状态结果 (PackageValue / RulePackageValue / MultiStateRangeDuration)
             if (result.HasEvent)
@@ -151,6 +182,13 @@ public class WorkerCalculationService : BackgroundService
 
                 if (result.StatesDic.Count > 0)
                     alarmStates.AddRange(result.StatesDic.Keys);
+
+                var validStates = alarmStates.Where(s => !string.IsNullOrEmpty(s) && s != "PACKAGECOMPLETEEVENT").ToList();
+
+                // 在写入实时报警前检查是否为新报警，以便正确写入历史事件
+                var existingAlarm = await _alarmWriter.GetAlarmAsync(monitor.Id);
+                bool isNewAlarm = validStates.Count > 0
+                    && (existingAlarm == null || !validStates.Contains(existingAlarm.StatusKey));
 
                 foreach (var stateKey in alarmStates)
                 {
@@ -173,10 +211,10 @@ public class WorkerCalculationService : BackgroundService
                     await _alarmWriter.WriteRealtimeAlarmAsync(alarm);
                 }
 
-                // 写入历史事件（仅对有实质状态的报警）
-                if (alarmStates.Any(s => !string.IsNullOrEmpty(s) && s != "PACKAGECOMPLETEEVENT"))
+                // 仅在新报警时写入一条历史事件
+                if (isNewAlarm)
                 {
-                    var firstState = alarmStates.First(s => !string.IsNullOrEmpty(s) && s != "PACKAGECOMPLETEEVENT");
+                    var firstState = validStates[0];
                     var historyAlarm = new AlarmSnapshot
                     {
                         MonitorId = monitor.Id,
@@ -192,26 +230,22 @@ public class WorkerCalculationService : BackgroundService
                     await _alarmWriter.WriteHistoryAlarmAsync(historyAlarm.ToAlarmEvent());
                 }
             }
-            else
+            else if (state?.PreviousStatus != null)
             {
-                var state = await _stateStore.GetAsync(monitor.Id);
-                if (state?.PreviousStatus != null)
+                // 报警消除：先写 clear 事件，再清除实时报警
+                var clearEvent = new AlarmEvent
                 {
-                    // 报警消除
-                    var clearEvent = new AlarmEvent
-                    {
-                        MonitorId = monitor.Id,
-                        MonitorKey = monitor.Key,
-                        MonitorName = monitor.Name,
-                        StatusKey = state.PreviousStatus,
-                        EventType = Shared.Enums.EventType.Clear,
-                        OccurTime = now,
-                        ClearTime = now,
-                        WorkerId = WorkerId,
-                    };
-                    await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
-                    await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
-                }
+                    MonitorId = monitor.Id,
+                    MonitorKey = monitor.Key,
+                    MonitorName = monitor.Name,
+                    StatusKey = state.PreviousStatus,
+                    EventType = Shared.Enums.EventType.Clear,
+                    OccurTime = now,
+                    ClearTime = now,
+                    WorkerId = WorkerId,
+                };
+                await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
+                await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
             }
 
             monitor.LastCalculateTime = now;

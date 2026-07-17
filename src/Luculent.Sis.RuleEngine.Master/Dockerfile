@@ -35,7 +35,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble
 WORKDIR /app
 
 # 设置监听端口
-ENV ASPNETCORE_URLS=http://0.0.0.0:11081
+ENV ASPNETCORE_URLS=http://0.0.0.0:11082
 
 # 安装 curl（健康检查用）
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
@@ -43,10 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 COPY --from=build /app /app
 
 # Master HTTP API 端口
-EXPOSE 11081
+EXPOSE 11082
 
 # 健康检查
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:11081/api/ruleengine/health || exit 1
+    CMD curl -f http://localhost:11082/api/ruleengine/health || exit 1
 
 ENTRYPOINT ["dotnet", "Luculent.Sis.RuleEngine.Master.dll"]

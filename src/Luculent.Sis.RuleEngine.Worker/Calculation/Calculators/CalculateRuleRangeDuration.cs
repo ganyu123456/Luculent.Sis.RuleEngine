@@ -39,7 +39,13 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
             return RuleCalculateResult.Empty();
         }
 
-        var state = await _stateStore.GetAsync(monitor.Id);
+        // 确保 state 始终存在，从 CheckDurationHit 内部提到外部避免丢失
+        var state = await _stateStore.GetAsync(monitor.Id)
+                    ?? new CalculationState
+                    {
+                        MonitorId = monitor.Id,
+                        RuleType = RuleType.RangeDuration,
+                    };
 
         foreach (var rule in rules)
         {
@@ -63,7 +69,7 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
                 continue;
             }
 
-            var durationHit = CheckDurationHit(monitor.Id, rule, isSatisfied, timeMs, state);
+            var durationHit = CheckDurationHit(rule, isSatisfied, timeMs, state);
             if (durationHit)
             {
                 result.State = rule.StatusKey;
@@ -74,24 +80,13 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
             }
         }
 
-        if (state != null)
-        {
-            await _stateStore.SaveAsync(monitor.Id, state);
-        }
-
+        await _stateStore.SaveAsync(monitor.Id, state);
         return result;
     }
 
-    private bool CheckDurationHit(string monitorId, RangeDurationRuleConfig rule,
-        bool hit, long timeMs, CalculationState? state)
+    private static bool CheckDurationHit(RangeDurationRuleConfig rule,
+        bool hit, long timeMs, CalculationState state)
     {
-        state ??= new CalculationState
-        {
-            MonitorId = monitorId,
-            RuleType = RuleType.RangeDuration,
-            PreviousStatus = string.Empty,
-        };
-
         if (!hit)
         {
             state.LastSatisfiedTimeMs = 0;

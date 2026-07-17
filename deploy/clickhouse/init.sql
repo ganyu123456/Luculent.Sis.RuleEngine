@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS ruleengine.alarm_events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(occur_time)
 ORDER BY (monitor_id, occur_time)
-TTL occur_time + INTERVAL 365 DAY
 SETTINGS index_granularity = 8192;
 
 -- ===== 报警日统计物化视图 =====

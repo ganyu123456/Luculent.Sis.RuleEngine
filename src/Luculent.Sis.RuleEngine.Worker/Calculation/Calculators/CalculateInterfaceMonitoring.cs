@@ -26,7 +26,7 @@ public class CalculateInterfaceMonitoring : RuleCalculatorBase
         if (opts == null) return RuleCalculateResult.Empty();
 
         var time = calcTime ?? DateTime.UtcNow;
-        var failureCount = opts.FailureCount > 0 ? opts.FailureCount : monitor.FailureCount;
+        var failureCount = opts.FailureCount > 0 ? opts.FailureCount : (monitor.FailureCount ?? 5);
 
         // ManualFlag 检查
         if (monitor.ManualFlag == 0)

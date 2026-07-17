@@ -206,6 +206,12 @@ public class HistoryAlarmService
             conditions.Add($"status_key IN ({keys})");
         }
 
+        if (request.EventTypes?.Count > 0)
+        {
+            var types = string.Join(", ", request.EventTypes.Select(t => $"'{EscapeSql(t)}'"));
+            conditions.Add($"event_type IN ({types})");
+        }
+
         return conditions.Count > 0 ? string.Join(" AND ", conditions) : "1=1";
     }
 

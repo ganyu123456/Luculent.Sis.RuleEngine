@@ -131,6 +131,33 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         await cmd.ExecuteNonQueryAsync(ct);
+
+        // 对 clear 事件，同步更新对应 trigger 事件的 clear_time
+        foreach (var e in events)
+        {
+            if (e.EventType != EventType.Clear) continue;
+
+            try
+            {
+                using var updateCmd = conn.CreateCommand();
+                updateCmd.CommandText = $"""
+                    ALTER TABLE ruleengine.alarm_events
+                    UPDATE clear_time = '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}'
+                    WHERE monitor_id = '{EscapeSql(e.MonitorId)}'
+                      AND status_key = '{EscapeSql(e.StatusKey)}'
+                      AND event_type = 'trigger'
+                      AND clear_time IS NULL
+                      AND occur_time >= '{e.OccurTime.AddHours(-1):yyyy-MM-dd HH:mm:ss.fff}'
+                    SETTINGS mutations_sync = 1
+                    """;
+                await updateCmd.ExecuteNonQueryAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "更新 trigger clear_time 失败: {MonitorId}/{StatusKey}",
+                    e.MonitorId, e.StatusKey);
+            }
+        }
     }
 
     private static string FormatRow(AlarmEvent e)
