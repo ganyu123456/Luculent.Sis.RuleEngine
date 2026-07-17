@@ -16,7 +16,7 @@ import json, random, time, urllib.request, urllib.error, sys, argparse
 
 MASTER_URL = "http://localhost:11081"
 TOTAL = 10000
-TAG_NAMES = [f"tag_{i:05d}" for i in range(2000)]
+TAG_NAMES = ["db05.test1"]
 
 # 9 种规则类型 (对应 RuleType 枚举)
 RT_EXPRESSION = 1
@@ -306,9 +306,9 @@ def main():
     time.sleep(3)
     test_endpoint(f"{master_url}/api/ruleengine/health", "Health")
 
-    # ④ 等待计算运行 (≥3 分钟)
-    wait_sec = 190  # ~3.2 分钟
-    print(f"\n[4/8] 等待规则计算运行 {wait_sec}s (目标 > 3 分钟)...")
+    # ④ 等待计算运行 (≥2 分钟)
+    wait_sec = 135  # ~2.25 分钟
+    print(f"\n[4/8] 等待规则计算运行 {wait_sec}s (目标 > 2 分钟)...")
     for i in range(wait_sec // 10):
         time.sleep(10)
         elapsed = (i + 1) * 10

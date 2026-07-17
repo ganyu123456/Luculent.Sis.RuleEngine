@@ -66,7 +66,7 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://0.0.0.0:11081
       - REDIS_CONNECTION=redis:6379,password=${REDIS_PASSWORD:-}
-      - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;User=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
+      - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;Username=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
       - Master__InstanceId=${HOSTNAME:-master-1}
     depends_on:
       redis:
@@ -89,7 +89,7 @@ services:
       - Worker__GrpcPort=50051
       - MASTER_API_URL=http://master:11081
       - REDIS_CONNECTION=redis:6379,password=${REDIS_PASSWORD:-}
-      - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;User=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
+      - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;Username=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
     ports:
       # 每个 Worker 映射不同端口：50051, 50052, 50053...
       # Docker Compose 自动处理端口冲突

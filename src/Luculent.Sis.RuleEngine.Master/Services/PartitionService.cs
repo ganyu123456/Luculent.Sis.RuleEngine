@@ -123,6 +123,7 @@ public class WorkerInfo
     public string WorkerId { get; set; } = string.Empty;
     public string GrpcAddress { get; set; } = string.Empty;
     public int Capacity { get; set; } = 100000;
+    public int MonitorCount { get; set; }
     public DateTime RegisteredAt { get; set; }
     public DateTime LastHeartbeat { get; set; }
     public WorkerStatus Status { get; set; }

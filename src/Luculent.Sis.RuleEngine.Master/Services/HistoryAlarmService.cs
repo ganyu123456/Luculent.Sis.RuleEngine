@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using ClickHouse.Client.ADO;
 using Luculent.Sis.RuleEngine.Shared.DTOs;
@@ -15,8 +16,10 @@ public class HistoryAlarmService
     public HistoryAlarmService(IConfiguration configuration, ILogger<HistoryAlarmService> logger)
     {
         _connectionString = configuration.GetValue<string>("CLICKHOUSE_CONNECTION")
-            ?? "Host=localhost;Port=8123;Database=ruleengine";
+            ?? "Host=localhost;Port=8123;Database=ruleengine;Username=ruleengine;Password=RuleEngine2026!";
         _logger = logger;
+        _logger.LogInformation("HistoryAlarmService 初始化, ClickHouse: {ConnString}",
+            _connectionString.Replace("Password=", "Password=***"));
     }
 
     /// <summary>
@@ -24,6 +27,7 @@ public class HistoryAlarmService
     /// </summary>
     public async Task<AlarmQueryResponse> QueryAsync(AlarmQueryRequest request)
     {
+        var sw = Stopwatch.StartNew();
         var where = BuildWhere(request, out var parameters);
 
         var countSql = $"SELECT count() FROM ruleengine.alarm_events WHERE {where}";
@@ -36,6 +40,8 @@ public class HistoryAlarmService
             LIMIT {request.MaxResultCount} OFFSET {request.SkipCount}
             """;
 
+        _logger.LogDebug("ClickHouse 查询历史: WHERE={Where}, LIMIT={Limit}", where, request.MaxResultCount);
+
         await using var conn = new ClickHouseConnection(_connectionString);
         await conn.OpenAsync();
 
@@ -43,7 +49,7 @@ public class HistoryAlarmService
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = countSql;
-            totalCount = (long)(await cmd.ExecuteScalarAsync())!;
+            totalCount = Convert.ToInt64(await cmd.ExecuteScalarAsync());
         }
 
         var items = new List<AlarmEventDTO>();
@@ -69,6 +75,10 @@ public class HistoryAlarmService
             }
         }
 
+        sw.Stop();
+        _logger.LogInformation("ClickHouse 历史查询完成: Total={TotalCount}, Returned={Count}, 耗时 {ElapsedMs}ms",
+            totalCount, items.Count, sw.ElapsedMilliseconds);
+
         return new AlarmQueryResponse { Items = items, TotalCount = totalCount };
     }
 
@@ -90,6 +100,7 @@ public class HistoryAlarmService
     /// </summary>
     public async Task<ClosedLoopValidationResult> ValidateClosedLoopAsync(DateTime startTime, DateTime endTime)
     {
+        var sw = Stopwatch.StartNew();
         var sql = $"""
             SELECT
                 monitor_id,
@@ -109,6 +120,8 @@ public class HistoryAlarmService
             LIMIT 500
             """;
 
+        _logger.LogDebug("闭环验证查询: {StartTime} ~ {EndTime}", startTime, endTime);
+
         await using var conn = new ClickHouseConnection(_connectionString);
         await conn.OpenAsync();
 
@@ -119,16 +132,17 @@ public class HistoryAlarmService
             await using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
+                var clearCount = Convert.ToInt64(reader.GetValue(5));
                 openEvents.Add(new OpenAlarmInfo
                 {
                     MonitorId = reader.GetString(0),
                     MonitorKey = reader.GetString(1),
                     MonitorName = reader.GetString(2),
                     StatusKey = reader.GetString(3),
-                    TriggerCount = reader.GetInt64(4),
-                    ClearCount = reader.GetInt64(5),
+                    TriggerCount = Convert.ToInt64(reader.GetValue(4)),
+                    ClearCount = clearCount,
                     FirstTrigger = reader.GetDateTime(6),
-                    LastClear = reader.IsDBNull(7) ? null : reader.GetDateTime(7),
+                    LastClear = clearCount > 0 && !reader.IsDBNull(7) ? reader.GetDateTime(7) : null,
                 });
             }
         }
@@ -150,17 +164,22 @@ public class HistoryAlarmService
             await using var reader = await cmd.ExecuteReaderAsync();
             if (await reader.ReadAsync())
             {
-                return new ClosedLoopValidationResult
+                sw.Stop();
+                var result = new ClosedLoopValidationResult
                 {
-                    TotalTriggers = reader.GetInt64(0),
-                    TotalClears = reader.GetInt64(1),
-                    AffectedMonitors = reader.GetInt64(2),
+                    TotalTriggers = Convert.ToInt64(reader.GetValue(0)),
+                    TotalClears = Convert.ToInt64(reader.GetValue(1)),
+                    AffectedMonitors = Convert.ToInt64(reader.GetValue(2)),
                     OpenEvents = openEvents,
-                    IsClosedLoop = reader.GetInt64(0) == reader.GetInt64(1),
+                    IsClosedLoop = Convert.ToInt64(reader.GetValue(0)) == Convert.ToInt64(reader.GetValue(1)),
                 };
+                _logger.LogInformation("闭环验证完成: 触发 {Triggers}, 消除 {Clears}, 未关闭 {OpenCount}, 耗时 {ElapsedMs}ms",
+                    result.TotalTriggers, result.TotalClears, result.OpenEvents.Count, sw.ElapsedMilliseconds);
+                return result;
             }
         }
 
+        sw.Stop();
         return new ClosedLoopValidationResult { OpenEvents = openEvents };
     }
 

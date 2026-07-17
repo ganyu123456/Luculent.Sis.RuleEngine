@@ -26,20 +26,22 @@ public class SimulatedTrendReader : ITrendDataReader
 
         foreach (var tag in tagNames)
         {
-            // 维护模拟值，加上随机波动
             if (!_simulatedValues.ContainsKey(tag))
                 _simulatedValues[tag] = 50.0 + _random.NextDouble() * 100;
 
-            // ±5 范围内随机波动
             var delta = (_random.NextDouble() - 0.5) * 10;
             _simulatedValues[tag] += delta;
-
-            // 限制范围
             _simulatedValues[tag] = Math.Clamp(_simulatedValues[tag], 0, 200);
             result[tag] = _simulatedValues[tag];
         }
 
         _logger.LogTrace("模拟读取 {Count} 个测点", result.Count);
         return Task.FromResult<IDictionary<string, double?>>(result);
+    }
+
+    public Task<IDictionary<string, double?>> ReadHistoryBatchAsync(
+        IEnumerable<string> tagNames, DateTime timestamp)
+    {
+        return ReadBatchAsync(tagNames);
     }
 }

@@ -8,7 +8,7 @@ namespace Luculent.Sis.RuleEngine.Worker.Storage;
 /// 生产环境复合报警写入器。
 /// 实时操作 → Redis，历史操作 → ClickHouse。
 /// </summary>
-public class ProductionAlarmWriter : IAlarmWriter
+public class ProductionAlarmWriter : IAlarmWriter, IAsyncDisposable
 {
     private readonly IAlarmWriter _realtime;   // Redis
     private readonly IAlarmWriter _history;    // ClickHouse
@@ -54,5 +54,13 @@ public class ProductionAlarmWriter : IAlarmWriter
     public Task<AlarmSnapshot?> GetAlarmAsync(string monitorId)
     {
         return _realtime.GetAlarmAsync(monitorId);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_history is IAsyncDisposable hd) await hd.DisposeAsync();
+        if (_realtime is IAsyncDisposable rd) await rd.DisposeAsync();
+        if (_realtime is IDisposable d) d.Dispose();
+        _logger.LogInformation("ProductionAlarmWriter 已释放");
     }
 }

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Luculent.Sis.RuleEngine.TrendDb</RootNamespace>
+    <AssemblyName>Luculent.Sis.RuleEngine.TrendDb</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.22.4" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.57.0" />
+    <PackageReference Include="Grpc.Core.Api" Version="2.57.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Luculent.Sis.RuleEngine.Shared\Luculent.Sis.RuleEngine.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="TrendDb_API">
+      <HintPath>..\..\lib\TrendDb_API.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>

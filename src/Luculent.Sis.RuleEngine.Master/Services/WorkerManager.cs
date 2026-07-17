@@ -25,11 +25,12 @@ public class WorkerManager
         return Task.FromResult(worker.WorkerId);
     }
 
-    public Task HeartbeatAsync(string workerId)
+    public Task HeartbeatAsync(string workerId, int monitorCount = 0)
     {
         if (_workers.TryGetValue(workerId, out var worker))
         {
             worker.LastHeartbeat = DateTime.UtcNow;
+            if (monitorCount > 0) worker.MonitorCount = monitorCount;
             if (worker.Status == WorkerStatus.Offline)
             {
                 worker.Status = WorkerStatus.Online;
@@ -37,6 +38,11 @@ public class WorkerManager
             }
         }
         return Task.CompletedTask;
+    }
+
+    public int GetWorkerMonitorCount(string workerId)
+    {
+        return _workers.TryGetValue(workerId, out var w) ? w.MonitorCount : 0;
     }
 
     public Task DeregisterAsync(string workerId)

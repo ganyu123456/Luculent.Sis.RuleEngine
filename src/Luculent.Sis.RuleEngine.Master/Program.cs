@@ -18,10 +18,35 @@ builder.Services.AddSingleton<HistoryAlarmService>();
 builder.Services.AddSingleton<DashboardService>();
 builder.Services.AddSingleton<PrerulePipeline>();
 
-// ===== Worker 服务注册（内嵌运行） =====
-builder.Services.AddSingleton<ITrendDataReader, SimulatedTrendReader>();
+// ===== Worker 依赖（仅用于 IAlarmWriter 查询，不启动计算循环）=====
+var trendDbConn = builder.Configuration.GetValue<string>("TRENDDB_CONNECTION");
+if (!string.IsNullOrEmpty(trendDbConn))
+{
+    builder.Services.AddTrendDb(builder.Configuration);
+}
+else
+{
+    builder.Services.AddSingleton<ITrendDataReader, SimulatedTrendReader>();
+}
 builder.Services.AddSingleton<IStateStore, InMemoryStateStore>();
-builder.Services.AddSingleton<IAlarmWriter, InMemoryAlarmWriter>();
+
+// 报警写入: 跟 Worker 一致，读取环境变量选择后端
+var redisConn = builder.Configuration.GetValue<string>("REDIS_CONNECTION");
+var clickhouseConn = builder.Configuration.GetValue<string>("CLICKHOUSE_CONNECTION");
+if (!string.IsNullOrEmpty(redisConn) && !string.IsNullOrEmpty(clickhouseConn))
+{
+    builder.Services.AddSingleton<IAlarmWriter>(sp =>
+    {
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var redisWriter = new RedisAlarmWriter(redisConn, loggerFactory.CreateLogger<RedisAlarmWriter>());
+        var clickhouseWriter = new ClickHouseAlarmWriter(clickhouseConn, loggerFactory.CreateLogger<ClickHouseAlarmWriter>());
+        return new ProductionAlarmWriter(redisWriter, clickhouseWriter, loggerFactory.CreateLogger<ProductionAlarmWriter>());
+    });
+}
+else
+{
+    builder.Services.AddSingleton<IAlarmWriter, InMemoryAlarmWriter>();
+}
 
 builder.Services.AddSingleton<CalculateRuleExpression>();
 builder.Services.AddSingleton<CalculateRuleRangeDuration>();
@@ -35,41 +60,52 @@ builder.Services.AddSingleton<CalculateInterfaceMonitoring>();
 builder.Services.AddSingleton<RuleDispatcher>();
 builder.Services.AddSingleton<WorkerCalculationService>();
 
-// Worker 计算循环作为 HostedService
-builder.Services.AddHostedService(sp => sp.GetRequiredService<WorkerCalculationService>());
+// 注意: 不注册 WorkerCalculationService 为 HostedService
+// Master 是 Control Plane，不执行规则计算
 
 var app = builder.Build();
 
 // ===== 配置同步 API =====
 var syncGroup = app.MapGroup("/api/ruleengine/sync");
 
-// 返回全量配置（供 Worker 拉取）
-syncGroup.MapGet("/full/config", (ConfigurationService config) =>
+// Worker 拉取分配给自己的配置（通过 workerId 查询参数）
+syncGroup.MapGet("/full/config", (string? workerId, ConfigurationService config) =>
 {
+    if (!string.IsNullOrEmpty(workerId))
+    {
+        var assigned = config.GetByWorkerId(workerId);
+        return Results.Ok(assigned);
+    }
     return Results.Ok(config.All.Values.ToList());
 });
 
-syncGroup.MapPost("/full", async (SyncFullRequest request,
+syncGroup.MapPost("/full", (SyncFullRequest request,
     ConfigurationService config,
     PartitionService partition,
     WorkerManager workers,
-    WorkerCalculationService calcService,
     ILogger<Program> logger) =>
 {
     logger.LogInformation("全量同步: {Count} 个监视项, 版本 {Version}", request.Monitors.Count, request.Version);
 
     config.LoadFull(request.Monitors);
 
-    // 将全量配置分配给 Worker 计算服务
-    foreach (var m in request.Monitors)
-    {
-        calcService.AssignedMonitors[m.Id] = m;
-    }
-
     var activeWorkers = workers.GetActiveWorkers();
     if (activeWorkers.Count > 0)
     {
-        partition.Partition(request.Monitors, activeWorkers);
+        // 执行 Cost-Aware 贪心装箱分区，存储到 ConfigurationService
+        var result = partition.Partition(request.Monitors, activeWorkers);
+        config.SetWorkerAssignments(result.WorkerAssignments);
+
+        // 更新每个 Worker 的 MonitorCount
+        foreach (var (wid, monitors) in result.WorkerAssignments)
+            workers.HeartbeatAsync(wid, monitors.Count);
+
+        logger.LogInformation("分区完成: {WorkerCount} Worker, 平均 ~{AvgCount} 项/Worker",
+            activeWorkers.Count, request.Monitors.Count / activeWorkers.Count);
+    }
+    else
+    {
+        logger.LogInformation("无活跃 Worker，配置已存储，等待 Worker 注册后分配");
     }
 
     return Results.Ok(new SyncResponse
@@ -82,7 +118,8 @@ syncGroup.MapPost("/full", async (SyncFullRequest request,
 
 syncGroup.MapPost("/delta", (SyncDeltaRequest request,
     ConfigurationService config,
-    WorkerCalculationService calcService,
+    PartitionService partition,
+    WorkerManager workers,
     ILogger<Program> logger) =>
 {
     logger.LogInformation("增量同步: +{Added} ~{Modified} -{Deleted}, 版本 {Version}",
@@ -90,18 +127,15 @@ syncGroup.MapPost("/delta", (SyncDeltaRequest request,
 
     if (request.Added.Count > 0) config.Add(request.Added);
     if (request.Modified.Count > 0) config.Update(request.Modified);
-    if (request.Deleted.Count > 0)
-    {
-        config.Remove(request.Deleted);
-        foreach (var id in request.Deleted)
-            calcService.AssignedMonitors.TryRemove(id, out _);
-    }
+    if (request.Deleted.Count > 0) config.Remove(request.Deleted);
 
-    // 增量更新 Worker
-    foreach (var m in request.Added)
-        calcService.AssignedMonitors[m.Id] = m;
-    foreach (var m in request.Modified)
-        calcService.AssignedMonitors[m.Id] = m;
+    // 增量变更后触发一次轻量重分区
+    var activeWorkers = workers.GetActiveWorkers();
+    if (activeWorkers.Count > 0)
+    {
+        var result = partition.Partition(config.All.Values.ToList(), activeWorkers);
+        config.SetWorkerAssignments(result.WorkerAssignments);
+    }
 
     return Results.Ok(new SyncResponse { Success = true, TotalMonitors = config.Count });
 });
@@ -122,61 +156,93 @@ alarmGroup.MapGet("/realtime/{monitorId}", async (string monitorId, AlarmQuerySe
 });
 
 // 历史报警查询
-alarmGroup.MapPost("/history", async (AlarmQueryRequest request, HistoryAlarmService historySvc) =>
+alarmGroup.MapPost("/history", async (AlarmQueryRequest request, HistoryAlarmService historySvc, ILogger<Program> logger) =>
 {
-    var result = await historySvc.QueryAsync(request);
-    return Results.Ok(result);
+    try
+    {
+        var result = await historySvc.QueryAsync(request);
+        return Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "历史查询失败: {Message}", ex.Message);
+        return Results.Problem(detail: ex.ToString(), statusCode: 500);
+    }
 });
 
-alarmGroup.MapGet("/history/{monitorId}", async (string monitorId, HistoryAlarmService historySvc) =>
+alarmGroup.MapGet("/history/{monitorId}", async (string monitorId, HistoryAlarmService historySvc, ILogger<Program> logger) =>
 {
-    var result = await historySvc.QueryByMonitorAsync(monitorId);
-    return Results.Ok(result);
+    try
+    {
+        var result = await historySvc.QueryByMonitorAsync(monitorId);
+        return Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "历史查询失败: {MonitorId}, {Message}", monitorId, ex.Message);
+        return Results.Problem(detail: ex.ToString(), statusCode: 500);
+    }
 });
 
 // 闭环验证: 检查是否有触发但无消除的报警事件
-alarmGroup.MapGet("/history/closed-loop/validate", async (HistoryAlarmService historySvc) =>
+alarmGroup.MapGet("/history/closed-loop/validate", async (HistoryAlarmService historySvc, ILogger<Program> logger) =>
 {
-    var now = DateTime.UtcNow;
-    var startTime = now.AddDays(-7);
-    var result = await historySvc.ValidateClosedLoopAsync(startTime, now);
-    return Results.Ok(result);
+    try
+    {
+        var now = DateTime.UtcNow;
+        var startTime = now.AddDays(-7);
+        var result = await historySvc.ValidateClosedLoopAsync(startTime, now);
+        return Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "闭环验证失败: {Message}", ex.Message);
+        return Results.Problem(detail: ex.ToString(), statusCode: 500);
+    }
 });
 
 // ===== Worker 注册 API =====
 var workerGroup = app.MapGroup("/api/ruleengine/workers");
 
-workerGroup.MapPost("/register", async (WorkerInfo worker, WorkerManager workers) =>
+workerGroup.MapPost("/register", (WorkerInfo worker, WorkerManager workers,
+    ConfigurationService config, PartitionService partition, ILogger<Program> logger) =>
 {
-    var id = await workers.RegisterAsync(worker);
+    var id = workers.RegisterAsync(worker).Result;
+
+    // 新 Worker 注册后，若有配置则触发一次分区分配
+    if (config.Count > 0)
+    {
+        var activeWorkers = workers.GetActiveWorkers();
+        var allMonitors = config.All.Values.ToList();
+        var result = partition.Partition(allMonitors, activeWorkers);
+        config.SetWorkerAssignments(result.WorkerAssignments);
+
+        foreach (var (wid, monitors) in result.WorkerAssignments)
+            workers.HeartbeatAsync(wid, monitors.Count);
+
+        logger.LogInformation("Worker {WorkerId} 注册后触发重分区: {WorkerCount} Worker",
+            worker.WorkerId, activeWorkers.Count);
+    }
+
     return Results.Ok(new { workerId = id });
 });
 
-workerGroup.MapPost("/{workerId}/heartbeat", async (string workerId, WorkerManager workers) =>
+workerGroup.MapPost("/{workerId}/heartbeat", async (string workerId, int? monitorCount, WorkerManager workers) =>
 {
-    await workers.HeartbeatAsync(workerId);
+    await workers.HeartbeatAsync(workerId, monitorCount ?? 0);
     return Results.Ok();
 });
 
-// ===== Worker 状态 API =====
-app.MapGet("/api/ruleengine/worker/monitors/count", (WorkerCalculationService calcService) =>
-{
-    return Results.Ok(new
-    {
-        Count = calcService.AssignedMonitors.Count,
-        Timestamp = DateTime.UtcNow,
-    });
-});
-
 // ===== 健康检查 =====
-app.MapGet("/api/ruleengine/health", (ConfigurationService config, WorkerManager workers, WorkerCalculationService calcService) =>
+app.MapGet("/api/ruleengine/health", (ConfigurationService config, WorkerManager workers) =>
 {
+    var dist = config.GetWorkerDistribution();
     return Results.Ok(new
     {
         Status = "healthy",
         MonitorCount = config.Count,
-        AssignedCount = calcService.AssignedMonitors.Count,
         ActiveWorkers = workers.ActiveCount,
+        WorkerDistribution = dist,
         Timestamp = DateTime.UtcNow,
     });
 });
@@ -192,6 +258,6 @@ app.MapGet("/api/ruleengine/dashboard/data", async (DashboardService dashboard) 
     return Results.Ok(data);
 });
 
-app.MapGet("/", () => "Luculent.Sis.RuleEngine Master + Worker (in-process)");
+app.MapGet("/", () => "Luculent.Sis.RuleEngine Master (Control Plane)");
 
 app.Run();

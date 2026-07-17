@@ -1,4 +1,5 @@
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
+using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
 using Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
@@ -8,8 +9,15 @@ using Luculent.Sis.RuleEngine.Worker.Storage;
 var builder = Host.CreateApplicationBuilder(args);
 
 // ===== 数据源 =====
-// 开发环境使用模拟数据，生产环境替换为 TrendDbReader
-builder.Services.AddSingleton<ITrendDataReader, SimulatedTrendReader>();
+var trendDbConn = builder.Configuration.GetValue<string>("TRENDDB_CONNECTION");
+if (!string.IsNullOrEmpty(trendDbConn))
+{
+    builder.Services.AddTrendDb(builder.Configuration);
+}
+else
+{
+    builder.Services.AddSingleton<ITrendDataReader, SimulatedTrendReader>();
+}
 
 // ===== 状态存储 =====
 // 开发环境使用内存存储，生产环境替换为 RocksDbStateStore
@@ -67,23 +75,63 @@ builder.Services.AddSingleton<PrerulePipeline>();
 builder.Services.AddSingleton<RuleDispatcher>();
 
 // ===== 主计算服务 =====
-builder.Services.AddHostedService<WorkerCalculationService>();
+builder.Services.AddSingleton<WorkerCalculationService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WorkerCalculationService>());
+
+// Worker 标识: 环境变量 > MachineName
+var workerId = builder.Configuration.GetValue<string>("WORKER_ID") ?? Environment.MachineName;
 
 var host = builder.Build();
 
-// 多 Worker 模式: 从 Master 拉取初始配置（在 host.Run 之前）
+// 设置 WorkerId 到计算服务
+var calcService = host.Services.GetRequiredService<WorkerCalculationService>();
+calcService.WorkerId = workerId;
+
+// 多 Worker 模式: 从 Master 拉取初始配置并注册（在 host.Run 之前）
 if (!string.IsNullOrEmpty(masterApiUrl))
 {
     var configClient = host.Services.GetRequiredService<MasterConfigClient>();
-    var calcService = host.Services.GetRequiredService<WorkerCalculationService>();
-    var logger = host.Services.GetRequiredService<ILogger<Program>>();
+    var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Luculent.Sis.RuleEngine.Worker");
 
     try
     {
-        var monitors = await configClient.FetchFullConfigAsync();
+        // 注册到 Master
+        await configClient.RegisterAsync(workerId);
+        logger.LogInformation("Worker {WorkerId} 已注册到 Master", workerId);
+
+        // 拉取分配给本 Worker 的配置（重试直到有监视项分配过来）
+        List<MonitorConfig> monitors;
+        var retryCount = 0;
+        while (true)
+        {
+            monitors = await configClient.FetchFullConfigAsync(workerId);
+            if (monitors.Count > 0 || retryCount >= 12) // 最多重试 60s
+                break;
+            retryCount++;
+            logger.LogInformation("Worker {WorkerId} 未获取到配置，5s 后重试 ({Retry}/12)", workerId, retryCount);
+            await Task.Delay(TimeSpan.FromSeconds(5));
+        }
+
         foreach (var m in monitors)
             calcService.AssignedMonitors[m.Id] = m;
-        logger.LogInformation("从 Master 拉取配置完成: {Count} 个监视项", monitors.Count);
+        logger.LogInformation("Worker {WorkerId} 从 Master 拉取配置完成: {Count} 个监视项", workerId, monitors.Count);
+
+        // 启动心跳上报（含监视项数量）
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(15));
+                    await configClient.HeartbeatAsync(workerId, calcService.AssignedMonitors.Count);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Worker {WorkerId} 心跳失败", workerId);
+                }
+            }
+        });
     }
     catch (Exception ex)
     {

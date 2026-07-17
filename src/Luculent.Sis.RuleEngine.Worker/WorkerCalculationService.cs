@@ -23,6 +23,11 @@ public class WorkerCalculationService : BackgroundService
     /// </summary>
     public ConcurrentDictionary<string, MonitorConfig> AssignedMonitors { get; } = new();
 
+    /// <summary>
+    /// Worker 标识，用于在报警中区分不同 Worker。
+    /// </summary>
+    public string WorkerId { get; set; } = Environment.MachineName;
+
     public WorkerCalculationService(
         ITrendDataReader trendReader,
         IStateStore stateStore,
@@ -120,7 +125,7 @@ public class WorkerCalculationService : BackgroundService
                             EventType = Shared.Enums.EventType.Clear,
                             OccurTime = now,
                             ClearTime = now,
-                            WorkerId = Environment.MachineName,
+                            WorkerId = WorkerId,
                         };
                         await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
                     }
@@ -162,7 +167,7 @@ public class WorkerCalculationService : BackgroundService
                         Value = result.TriggerValue ?? 0,
                         OccurTime = now,
                         ConfigVersion = monitor.LastModificationTime,
-                        WorkerId = Environment.MachineName,
+                        WorkerId = WorkerId,
                     };
 
                     await _alarmWriter.WriteRealtimeAlarmAsync(alarm);
@@ -182,7 +187,7 @@ public class WorkerCalculationService : BackgroundService
                         Value = result.TriggerValue ?? 0,
                         OccurTime = now,
                         ConfigVersion = monitor.LastModificationTime,
-                        WorkerId = Environment.MachineName,
+                        WorkerId = WorkerId,
                     };
                     await _alarmWriter.WriteHistoryAlarmAsync(historyAlarm.ToAlarmEvent());
                 }
@@ -202,7 +207,7 @@ public class WorkerCalculationService : BackgroundService
                         EventType = Shared.Enums.EventType.Clear,
                         OccurTime = now,
                         ClearTime = now,
-                        WorkerId = Environment.MachineName,
+                        WorkerId = WorkerId,
                     };
                     await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
                     await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);

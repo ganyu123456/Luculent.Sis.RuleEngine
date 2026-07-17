@@ -4,11 +4,12 @@ using Luculent.Sis.RuleEngine.Shared.Models;
 namespace Luculent.Sis.RuleEngine.Master.Services;
 
 /// <summary>
-/// 全量配置管理器。持有所有监视项配置（~2GB / 100万项）。
+/// 全量配置管理器。持有所有监视项配置及分区分配结果。
 /// </summary>
 public class ConfigurationService
 {
     private readonly ConcurrentDictionary<string, MonitorConfig> _configs = new();
+    private readonly ConcurrentDictionary<string, List<MonitorConfig>> _workerAssignments = new();
     private readonly ILogger<ConfigurationService> _logger;
 
     public int Count => _configs.Count;
@@ -54,9 +55,33 @@ public class ConfigurationService
         return config;
     }
 
+    /// <summary>
+    /// 存储分区结果：每个 Worker 分配到哪些监视项。
+    /// </summary>
+    public void SetWorkerAssignments(Dictionary<string, List<MonitorConfig>> assignments)
+    {
+        _workerAssignments.Clear();
+        foreach (var (workerId, monitors) in assignments)
+            _workerAssignments[workerId] = monitors;
+        _logger.LogInformation("分区分配已更新: {WorkerCount} Worker", assignments.Count);
+    }
+
+    /// <summary>
+    /// 获取指定 Worker 分配的监视项。
+    /// 如果没有分区结果（无注册 Worker），返回空列表。
+    /// </summary>
     public List<MonitorConfig> GetByWorkerId(string workerId)
     {
-        // 需要结合分区映射表查询
-        return _configs.Values.ToList();
+        if (_workerAssignments.TryGetValue(workerId, out var monitors))
+            return monitors;
+        return new List<MonitorConfig>();
+    }
+
+    /// <summary>
+    /// 获取所有 Worker 的分配数量。
+    /// </summary>
+    public IReadOnlyDictionary<string, int> GetWorkerDistribution()
+    {
+        return _workerAssignments.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
     }
 }

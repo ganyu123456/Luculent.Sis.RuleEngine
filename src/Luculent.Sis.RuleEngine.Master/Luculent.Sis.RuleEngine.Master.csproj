@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Luculent.Sis.RuleEngine.Shared\Luculent.Sis.RuleEngine.Shared.csproj" />
+    <ProjectReference Include="..\Luculent.Sis.RuleEngine.TrendDb\Luculent.Sis.RuleEngine.TrendDb.csproj" />
     <ProjectReference Include="..\Luculent.Sis.RuleEngine.Worker\Luculent.Sis.RuleEngine.Worker.csproj" />
   </ItemGroup>
 
