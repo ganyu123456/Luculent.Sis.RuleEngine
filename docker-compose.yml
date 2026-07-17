@@ -68,6 +68,7 @@ services:
       - REDIS_CONNECTION=redis:6379,password=${REDIS_PASSWORD:-}
       - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;Username=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
       - Master__InstanceId=${HOSTNAME:-master-1}
+      - MonitorCenter__ApiUrl=http://host.docker.internal:11080
     depends_on:
       redis:
         condition: service_healthy

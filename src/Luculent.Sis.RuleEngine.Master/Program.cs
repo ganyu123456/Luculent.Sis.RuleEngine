@@ -27,7 +27,6 @@ if (!string.IsNullOrEmpty(monitorCenterUrl))
         client.BaseAddress = new Uri(monitorCenterUrl);
         client.Timeout = TimeSpan.FromSeconds(30);
     });
-    builder.Services.AddSingleton<MonitorCenterClient>();
 }
 
 // ===== Worker 依赖（仅用于 IAlarmWriter 查询，不启动计算循环）=====
