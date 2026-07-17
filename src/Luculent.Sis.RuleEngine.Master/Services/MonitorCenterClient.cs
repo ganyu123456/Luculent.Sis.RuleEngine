@@ -28,8 +28,8 @@ public class MonitorCenterClient
     {
         _logger.LogInformation("从 Monitor Center 拉取全量监视项: {Url}", _http.BaseAddress);
 
-        var url = "/api/services/app/monitorDataForPublic/GetAllMonitors";
-        var response = await _http.PostAsync(url, null, ct);
+        var url = "/api/services/monitorcenter/monitorDataForPublic/GetAllMonitors";
+        var response = await _http.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
 
         // ABP 响应包装格式: { "result": [...], "success": true }
