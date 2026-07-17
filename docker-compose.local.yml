@@ -1,36 +1,37 @@
 # ===== SIS RuleEngine 本地开发部署 =====
-# 使用现有 sis-redis + sis-clickhouse，仅启动 Master + Worker
+# 使用现有 sis-redis + sis-clickhouse + 本地构建镜像
 #
 # 启动命令:
 #   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
-#   横向扩展: docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --scale worker=5
 
 services:
-  # 覆盖：不启动 redis（使用外部 sis-redis）
+  # 不启动 redis / clickhouse（使用外部 sis-* 容器）
   redis:
     profiles:
       - disabled
 
-  # 覆盖：不启动 clickhouse（使用外部 sis-clickhouse）
   clickhouse:
     profiles:
       - disabled
 
   master:
+    image: ruleengine-master:local
+    build: !reset
+    depends_on: !reset {}
     environment:
-      - Redis__ConnectionString=sis-redis:6379,password=${REDIS_PASSWORD:-}
-      - ClickHouse__ConnectionString=Host=sis-clickhouse;Port=8123;Database=ruleengine;User=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://0.0.0.0:11081
+      - Redis__ConnectionString=sis-redis:6379
+      - ClickHouse__ConnectionString=Host=sis-clickhouse;Port=8123;Database=ruleengine
+    ports:
+      - "11081:11081"
     networks:
       - ruleengine
       - sis_net
 
   worker:
-    environment:
-      - Redis__ConnectionString=sis-redis:6379,password=${REDIS_PASSWORD:-}
-      - ClickHouse__ConnectionString=Host=sis-clickhouse;Port=8123;Database=ruleengine;User=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
-    networks:
-      - ruleengine
-      - sis_net
+    profiles:
+      - disabled
 
 networks:
   sis_net:

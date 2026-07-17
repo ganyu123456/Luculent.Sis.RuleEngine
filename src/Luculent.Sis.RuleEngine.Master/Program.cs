@@ -1,6 +1,10 @@
 using Luculent.Sis.RuleEngine.Master.Services;
 using Luculent.Sis.RuleEngine.Shared.DTOs;
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
+using Luculent.Sis.RuleEngine.Worker;
+using Luculent.Sis.RuleEngine.Worker.Calculation;
+using Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
+using Luculent.Sis.RuleEngine.Worker.DataSource;
 using Luculent.Sis.RuleEngine.Worker.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -11,52 +15,84 @@ builder.Services.AddSingleton<PartitionService>();
 builder.Services.AddSingleton<WorkerManager>();
 builder.Services.AddSingleton<AlarmQueryService>();
 
-// 开发环境使用内存报警存储（Worker 和 Master 共享）
+// ===== Worker 服务注册（内嵌运行） =====
+builder.Services.AddSingleton<ITrendDataReader, SimulatedTrendReader>();
+builder.Services.AddSingleton<IStateStore, InMemoryStateStore>();
 builder.Services.AddSingleton<IAlarmWriter, InMemoryAlarmWriter>();
 
-// ===== 健康检查 =====
-builder.Services.AddHealthChecks();
+builder.Services.AddSingleton<CalculateRuleExpression>();
+builder.Services.AddSingleton<CalculateRuleRangeDuration>();
+builder.Services.AddSingleton<CalculateRuleRangeFrequency>();
+builder.Services.AddSingleton<CalculateRulePackageValue>();
+builder.Services.AddSingleton<CalculateRuleMultiStateRangeDuration>();
+builder.Services.AddSingleton<CalculateFeatureValue>();
+builder.Services.AddSingleton<CalculatePackageValue>();
+builder.Services.AddSingleton<CalculateWallTemperature>();
+builder.Services.AddSingleton<CalculateInterfaceMonitoring>();
+builder.Services.AddSingleton<RuleDispatcher>();
+builder.Services.AddSingleton<WorkerCalculationService>();
+
+// Worker 计算循环作为 HostedService
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WorkerCalculationService>());
 
 var app = builder.Build();
 
 // ===== 配置同步 API =====
 var syncGroup = app.MapGroup("/api/ruleengine/sync");
 
-syncGroup.MapPost("/full", async (SyncFullRequest request, ConfigurationService config, PartitionService partition, WorkerManager workers, ILogger<Program> logger) =>
+syncGroup.MapPost("/full", async (SyncFullRequest request,
+    ConfigurationService config,
+    PartitionService partition,
+    WorkerManager workers,
+    WorkerCalculationService calcService,
+    ILogger<Program> logger) =>
 {
     logger.LogInformation("全量同步: {Count} 个监视项, 版本 {Version}", request.Monitors.Count, request.Version);
 
     config.LoadFull(request.Monitors);
 
+    // 将全量配置分配给 Worker 计算服务
+    foreach (var m in request.Monitors)
+    {
+        calcService.AssignedMonitors[m.Id] = m;
+    }
+
     var activeWorkers = workers.GetActiveWorkers();
     if (activeWorkers.Count > 0)
     {
-        var result = partition.Partition(request.Monitors, activeWorkers);
-        return Results.Ok(new SyncResponse
-        {
-            Success = true,
-            WorkerCount = activeWorkers.Count,
-            TotalMonitors = request.Monitors.Count,
-        });
+        partition.Partition(request.Monitors, activeWorkers);
     }
 
     return Results.Ok(new SyncResponse
     {
         Success = true,
-        WorkerCount = 0,
+        WorkerCount = Math.Max(1, activeWorkers.Count),
         TotalMonitors = request.Monitors.Count,
-        Error = "没有活跃的 Worker",
     });
 });
 
-syncGroup.MapPost("/delta", (SyncDeltaRequest request, ConfigurationService config, ILogger<Program> logger) =>
+syncGroup.MapPost("/delta", (SyncDeltaRequest request,
+    ConfigurationService config,
+    WorkerCalculationService calcService,
+    ILogger<Program> logger) =>
 {
     logger.LogInformation("增量同步: +{Added} ~{Modified} -{Deleted}, 版本 {Version}",
         request.Added.Count, request.Modified.Count, request.Deleted.Count, request.Version);
 
     if (request.Added.Count > 0) config.Add(request.Added);
     if (request.Modified.Count > 0) config.Update(request.Modified);
-    if (request.Deleted.Count > 0) config.Remove(request.Deleted);
+    if (request.Deleted.Count > 0)
+    {
+        config.Remove(request.Deleted);
+        foreach (var id in request.Deleted)
+            calcService.AssignedMonitors.TryRemove(id, out _);
+    }
+
+    // 增量更新 Worker
+    foreach (var m in request.Added)
+        calcService.AssignedMonitors[m.Id] = m;
+    foreach (var m in request.Modified)
+        calcService.AssignedMonitors[m.Id] = m;
 
     return Results.Ok(new SyncResponse { Success = true, TotalMonitors = config.Count });
 });
@@ -76,7 +112,7 @@ alarmGroup.MapGet("/realtime/{monitorId}", async (string monitorId, AlarmQuerySe
     return alarm != null ? Results.Ok(alarm) : Results.NotFound();
 });
 
-// ===== Worker 注册 API (gRPC 替代，开发环境使用 HTTP) =====
+// ===== Worker 注册 API =====
 var workerGroup = app.MapGroup("/api/ruleengine/workers");
 
 workerGroup.MapPost("/register", async (WorkerInfo worker, WorkerManager workers) =>
@@ -91,18 +127,29 @@ workerGroup.MapPost("/{workerId}/heartbeat", async (string workerId, WorkerManag
     return Results.Ok();
 });
 
+// ===== Worker 状态 API =====
+app.MapGet("/api/ruleengine/worker/monitors/count", (WorkerCalculationService calcService) =>
+{
+    return Results.Ok(new
+    {
+        Count = calcService.AssignedMonitors.Count,
+        Timestamp = DateTime.UtcNow,
+    });
+});
+
 // ===== 健康检查 =====
-app.MapGet("/api/ruleengine/health", (ConfigurationService config, WorkerManager workers) =>
+app.MapGet("/api/ruleengine/health", (ConfigurationService config, WorkerManager workers, WorkerCalculationService calcService) =>
 {
     return Results.Ok(new
     {
         Status = "healthy",
         MonitorCount = config.Count,
+        AssignedCount = calcService.AssignedMonitors.Count,
         ActiveWorkers = workers.ActiveCount,
         Timestamp = DateTime.UtcNow,
     });
 });
 
-app.MapGet("/", () => "Luculent.Sis.RuleEngine Master");
+app.MapGet("/", () => "Luculent.Sis.RuleEngine Master + Worker (in-process)");
 
 app.Run();

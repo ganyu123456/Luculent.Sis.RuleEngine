@@ -16,6 +16,9 @@ RUN dotnet restore src/Luculent.Sis.RuleEngine.Worker/Luculent.Sis.RuleEngine.Wo
 COPY src/Luculent.Sis.RuleEngine.Shared/ src/Luculent.Sis.RuleEngine.Shared/
 COPY src/Luculent.Sis.RuleEngine.Worker/ src/Luculent.Sis.RuleEngine.Worker/
 
+# 安装 Native AOT 编译依赖（clang）
+RUN apt-get update && apt-get install -y clang zlib1g-dev && rm -rf /var/lib/apt/lists/*
+
 # Native AOT 发布
 # - PublishAot=true: 编译为原生代码
 # - StripSymbols=true: 移除调试符号，减小体积
@@ -39,10 +42,6 @@ WORKDIR /app
 
 # 从编译阶段复制原生二进制
 COPY --from=build /app/Luculent.Sis.RuleEngine.Worker /app/
-# 复制 TrendDB 客户端 DLL（如需要）
-COPY --from=build /app/TrendDb_API.dll /app/ 2>/dev/null || true
-# 复制 RocksDB 原生库（如需要）
-COPY --from=build /app/lib* /app/ 2>/dev/null || true
 
 # Worker gRPC 端口（Master 连接此端口做健康检查）
 EXPOSE 50051

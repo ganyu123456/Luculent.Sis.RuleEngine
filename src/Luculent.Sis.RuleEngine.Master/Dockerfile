@@ -29,6 +29,12 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble
 
 WORKDIR /app
 
+# 设置监听端口
+ENV ASPNETCORE_URLS=http://0.0.0.0:11081
+
+# 安装 curl（健康检查用）
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app /app
 
 # Master HTTP API 端口
