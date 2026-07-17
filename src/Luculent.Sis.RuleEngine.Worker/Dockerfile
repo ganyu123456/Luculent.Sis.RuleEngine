@@ -7,12 +7,17 @@ WORKDIR /src
 # 先还原依赖（利用 Docker 缓存层）
 COPY src/Luculent.Sis.RuleEngine.Shared/Luculent.Sis.RuleEngine.Shared.csproj \
      src/Luculent.Sis.RuleEngine.Shared/
+COPY src/Luculent.Sis.RuleEngine.TrendDb/Luculent.Sis.RuleEngine.TrendDb.csproj \
+     src/Luculent.Sis.RuleEngine.TrendDb/
+COPY lib/ lib/
 COPY src/Luculent.Sis.RuleEngine.Worker/Luculent.Sis.RuleEngine.Worker.csproj \
      src/Luculent.Sis.RuleEngine.Worker/
 RUN dotnet restore src/Luculent.Sis.RuleEngine.Worker/Luculent.Sis.RuleEngine.Worker.csproj
 
 # 复制源码
 COPY src/Luculent.Sis.RuleEngine.Shared/ src/Luculent.Sis.RuleEngine.Shared/
+COPY src/Luculent.Sis.RuleEngine.TrendDb/ src/Luculent.Sis.RuleEngine.TrendDb/
+COPY lib/ lib/
 COPY src/Luculent.Sis.RuleEngine.Worker/ src/Luculent.Sis.RuleEngine.Worker/
 
 # 标准 JIT 发布

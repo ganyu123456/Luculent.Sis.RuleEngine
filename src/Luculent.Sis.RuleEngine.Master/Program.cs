@@ -18,6 +18,18 @@ builder.Services.AddSingleton<HistoryAlarmService>();
 builder.Services.AddSingleton<DashboardService>();
 builder.Services.AddSingleton<PrerulePipeline>();
 
+// ===== Monitor Center 集成 =====
+var monitorCenterUrl = builder.Configuration.GetValue<string>("MonitorCenter:ApiUrl");
+if (!string.IsNullOrEmpty(monitorCenterUrl))
+{
+    builder.Services.AddHttpClient<MonitorCenterClient>(client =>
+    {
+        client.BaseAddress = new Uri(monitorCenterUrl);
+        client.Timeout = TimeSpan.FromSeconds(30);
+    });
+    builder.Services.AddSingleton<MonitorCenterClient>();
+}
+
 // ===== Worker 依赖（仅用于 IAlarmWriter 查询，不启动计算循环）=====
 var trendDbConn = builder.Configuration.GetValue<string>("TRENDDB_CONNECTION");
 if (!string.IsNullOrEmpty(trendDbConn))
@@ -64,6 +76,50 @@ builder.Services.AddSingleton<WorkerCalculationService>();
 // Master 是 Control Plane，不执行规则计算
 
 var app = builder.Build();
+
+// ===== 启动时从 Monitor Center 拉取全量监视项（后台执行，不阻塞启动） =====
+if (!string.IsNullOrEmpty(monitorCenterUrl))
+{
+    _ = Task.Run(async () =>
+    {
+        var logger = app.Services.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("Luculent.Sis.RuleEngine.Master");
+        try
+        {
+            var client = app.Services.GetRequiredService<MonitorCenterClient>();
+            var config = app.Services.GetRequiredService<ConfigurationService>();
+            var partition = app.Services.GetRequiredService<PartitionService>();
+            var workers = app.Services.GetRequiredService<WorkerManager>();
+
+            // 等待 Worker 注册后再拉取配置
+            for (int i = 0; i < 12 && workers.ActiveCount == 0; i++)
+            {
+                logger.LogInformation("等待 Worker 注册... ({Retry}/12)", i + 1);
+                await Task.Delay(5000);
+            }
+
+            var monitors = await client.FetchAllMonitorsAsync();
+            logger.LogInformation("从 Monitor Center 拉取到 {Count} 个监视项", monitors.Count);
+
+            if (monitors.Count > 0)
+            {
+                config.LoadFull(monitors);
+
+                var activeWorkers = workers.GetActiveWorkers();
+                if (activeWorkers.Count > 0)
+                {
+                    var result = partition.Partition(monitors, activeWorkers);
+                    config.SetWorkerAssignments(result.WorkerAssignments);
+                    logger.LogInformation("启动分区完成: {WorkerCount} Worker", activeWorkers.Count);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "从 Monitor Center 拉取全量监视项失败，将等待 Monitor Center 推送变更");
+        }
+    });
+}
 
 // ===== 配置同步 API =====
 var syncGroup = app.MapGroup("/api/ruleengine/sync");
@@ -135,6 +191,60 @@ syncGroup.MapPost("/delta", (SyncDeltaRequest request,
     {
         var result = partition.Partition(config.All.Values.ToList(), activeWorkers);
         config.SetWorkerAssignments(result.WorkerAssignments);
+    }
+
+    return Results.Ok(new SyncResponse { Success = true, TotalMonitors = config.Count });
+});
+
+// ===== Monitor Center 联动 API =====
+// Monitor Center 在监视项变更时调用此接口通知规则引擎重新拉取全量配置
+var monitorGroup = app.MapGroup("/api/ruleengine/monitors");
+monitorGroup.MapPost("/on-changed", async (SyncDeltaRequest request,
+    ConfigurationService config,
+    PartitionService partition,
+    WorkerManager workers,
+    MonitorCenterClient? monitorCenterClient,
+    ILogger<Program> logger) =>
+{
+    logger.LogInformation("MonitorCenter 推送变更通知: +{Added} ~{Modified} -{Deleted}, 版本 {Version}",
+        request.Added.Count, request.Modified.Count, request.Deleted.Count, request.Version);
+
+    if (monitorCenterClient != null)
+    {
+        try
+        {
+            // 重新从 Monitor Center 拉取全量监视项
+            var monitors = await monitorCenterClient.FetchAllMonitorsAsync();
+            config.LoadFull(monitors);
+
+            var activeWorkers = workers.GetActiveWorkers();
+            if (activeWorkers.Count > 0)
+            {
+                var result = partition.Partition(monitors, activeWorkers);
+                config.SetWorkerAssignments(result.WorkerAssignments);
+                logger.LogInformation("变更后重分区完成: {WorkerCount} Worker, {Count} 监视项",
+                    activeWorkers.Count, monitors.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "从 Monitor Center 重新拉取失败");
+            return Results.Problem(detail: ex.Message, statusCode: 500);
+        }
+    }
+    else
+    {
+        // 无 MonitorCenterClient 时，使用请求体中的数据做增量更新（向后兼容）
+        if (request.Added.Count > 0) config.Add(request.Added);
+        if (request.Modified.Count > 0) config.Update(request.Modified);
+        if (request.Deleted.Count > 0) config.Remove(request.Deleted);
+
+        var activeWorkers = workers.GetActiveWorkers();
+        if (activeWorkers.Count > 0)
+        {
+            var result = partition.Partition(config.All.Values.ToList(), activeWorkers);
+            config.SetWorkerAssignments(result.WorkerAssignments);
+        }
     }
 
     return Results.Ok(new SyncResponse { Success = true, TotalMonitors = config.Count });
