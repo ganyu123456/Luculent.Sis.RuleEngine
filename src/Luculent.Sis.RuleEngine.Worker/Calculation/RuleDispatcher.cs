@@ -7,7 +7,7 @@ namespace Luculent.Sis.RuleEngine.Worker.Calculation;
 
 /// <summary>
 /// 根据 RuleType 将监控项分发到对应的计算器。
-/// 对标 MonitorCenter 的 RuleCalculateBlock switch 逻辑。
+/// 对标 MonitorCenter 的 RuleManager.Calculate switch 逻辑。
 /// </summary>
 public class RuleDispatcher
 {
@@ -49,7 +49,6 @@ public class RuleDispatcher
     public async Task<RuleCalculateResult> CalculateAsync(
         MonitorConfig monitor,
         IDictionary<string, double?> data,
-        CalculationState? state,
         DateTime? calcTime = null)
     {
         try
@@ -59,11 +58,11 @@ public class RuleDispatcher
                 RuleType.Expression => _expressionCalc.Calculate(monitor, data),
                 RuleType.RangeDuration => await _rangeDurationCalc.CalculateAsync(monitor, data, calcTime),
                 RuleType.RangeFrequency => await _rangeFrequencyCalc.CalculateAsync(monitor, data, calcTime),
-                RuleType.PackageValue => _packageValueCalc.Calculate(monitor, data),
+                RuleType.PackageValue => _oldPackageValueCalc.Calculate(monitor, data),
                 RuleType.FeatureValue => _featureValueCalc.Calculate(monitor, data),
-                RuleType.WallTemperatureValue => _wallTempCalc.Calculate(monitor, data, calcTime),
-                RuleType.InterfaceMonitoring => _interfaceCalc.Calculate(monitor, data, calcTime),
-                RuleType.RulePackageValue => _oldPackageValueCalc.Calculate(monitor, data),
+                RuleType.WallTemperatureValue => await _wallTempCalc.CalculateAsync(monitor, data, calcTime),
+                RuleType.InterfaceMonitoring => await _interfaceCalc.CalculateAsync(monitor, data, calcTime),
+                RuleType.RulePackageValue => _packageValueCalc.Calculate(monitor, data),
                 RuleType.RuleMultiStateRangeDuration => await _multiStateCalc.CalculateAsync(monitor, data, calcTime),
                 _ => RuleCalculateResult.Empty(),
             };

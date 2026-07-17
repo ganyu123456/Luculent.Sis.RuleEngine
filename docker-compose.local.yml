@@ -3,6 +3,7 @@
 #
 # 启动命令:
 #   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+#   扩展 Worker: docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --scale worker=2
 
 services:
   # 不启动 redis / clickhouse（使用外部 sis-* 容器）
@@ -16,13 +17,13 @@ services:
 
   master:
     image: ruleengine-master:local
-    build: !reset
+    build: !reset {}
     depends_on: !reset {}
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://0.0.0.0:11081
-      - Redis__ConnectionString=sis-redis:6379
-      - ClickHouse__ConnectionString=Host=sis-clickhouse;Port=8123;Database=ruleengine
+      - REDIS_CONNECTION=sis-redis:6379
+      - CLICKHOUSE_CONNECTION=Host=sis-clickhouse;Port=8123;Database=ruleengine
     ports:
       - "11081:11081"
     networks:
@@ -30,8 +31,28 @@ services:
       - sis_net
 
   worker:
-    profiles:
-      - disabled
+    image: ruleengine-worker:local
+    build: !reset
+      context: .
+      dockerfile: src/Luculent.Sis.RuleEngine.Worker/Dockerfile
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+      - MASTER_API_URL=http://master:11081
+      - REDIS_CONNECTION=sis-redis:6379
+      - CLICKHOUSE_CONNECTION=Host=sis-clickhouse;Port=8123;Database=ruleengine
+    depends_on: !reset
+      master:
+        condition: service_healthy
+    networks:
+      - ruleengine
+      - sis_net
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "2"
+          memory: "2G"
 
 networks:
   sis_net:

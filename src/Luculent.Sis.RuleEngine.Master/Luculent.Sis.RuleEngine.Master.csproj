@@ -13,4 +13,8 @@
     <ProjectReference Include="..\Luculent.Sis.RuleEngine.Worker\Luculent.Sis.RuleEngine.Worker.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="ClickHouse.Client" Version="7.14.0" />
+  </ItemGroup>
+
 </Project>

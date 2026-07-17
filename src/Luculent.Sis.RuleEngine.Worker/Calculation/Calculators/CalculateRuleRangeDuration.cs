@@ -40,7 +40,6 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
         }
 
         var state = await _stateStore.GetAsync(monitor.Id);
-        var hit = false;
 
         foreach (var rule in rules)
         {
@@ -59,7 +58,6 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
                     result.HasEvent = true;
                     result.TriggerValue = left.Value;
                     result.TriggerSymbol = rule.SymbolType;
-                    hit = true;
                     if (rule.BreakOnHit) break;
                 }
                 continue;
@@ -72,7 +70,6 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
                 result.HasEvent = true;
                 result.TriggerValue = left.Value;
                 result.TriggerSymbol = rule.SymbolType;
-                hit = true;
                 if (rule.BreakOnHit) break;
             }
         }

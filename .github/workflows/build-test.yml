@@ -1,4 +1,4 @@
-name: Build and Test
+name: Build and Release
 
 on:
   push:
@@ -35,39 +35,63 @@ jobs:
       - name: Test
         run: dotnet test --configuration Release --no-build --verbosity normal
 
-  # ── Docker Build (验证镜像可构建) ─────────────────────────
-  docker-build:
-    name: Docker Build
+  # ── Multi-arch Docker Build & Push (仅 tag) ─────────────
+  docker-release:
+    name: Docker Multi-Arch Release
     runs-on: ubuntu-latest
     needs: build-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      packages: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: ruleengine-master
+            dockerfile: src/Luculent.Sis.RuleEngine.Master/Dockerfile
+          - name: ruleengine-worker
+            dockerfile: src/Luculent.Sis.RuleEngine.Worker/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Extract version
+        id: version
+        run: |
+          V="${GITHUB_REF#refs/tags/v}"
+          echo "version=$V" >> $GITHUB_OUTPUT
 
-      - name: Build Master image
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.image.name }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: src/Luculent.Sis.RuleEngine.Master/Dockerfile
-          platforms: linux/amd64
-          push: false
-          tags: ruleengine-master:ci
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build Worker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: src/Luculent.Sis.RuleEngine.Worker/Dockerfile
-          platforms: linux/amd64
-          push: false
-          tags: ruleengine-worker:ci
-
-  # ── Release (仅 tag) ─────────────────────────────────────
+  # ── GitHub Release ───────────────────────────────────────
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: docker-build
+    needs: docker-release
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -85,3 +109,16 @@ jobs:
         with:
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
+          body: |
+            ## Docker Images (Multi-Arch: amd64 + arm64)
+
+            | Image | Pull Command |
+            |-------|-------------|
+            | Master | `docker pull ghcr.io/${{ github.repository_owner }}/ruleengine-master:${{ steps.version.outputs.version }}` |
+            | Worker | `docker pull ghcr.io/${{ github.repository_owner }}/ruleengine-worker:${{ steps.version.outputs.version }}` |
+
+            ### Quick Start
+            ```bash
+            docker pull ghcr.io/${{ github.repository_owner }}/ruleengine-master:${{ steps.version.outputs.version }}
+            docker pull ghcr.io/${{ github.repository_owner }}/ruleengine-worker:${{ steps.version.outputs.version }}
+            ```

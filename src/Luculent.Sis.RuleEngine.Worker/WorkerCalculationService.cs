@@ -15,6 +15,7 @@ public class WorkerCalculationService : BackgroundService
     private readonly IStateStore _stateStore;
     private readonly IAlarmWriter _alarmWriter;
     private readonly RuleDispatcher _dispatcher;
+    private readonly PrerulePipeline _prerule;
     private readonly ILogger<WorkerCalculationService> _logger;
 
     /// <summary>
@@ -27,12 +28,14 @@ public class WorkerCalculationService : BackgroundService
         IStateStore stateStore,
         IAlarmWriter alarmWriter,
         RuleDispatcher dispatcher,
+        PrerulePipeline prerule,
         ILogger<WorkerCalculationService> logger)
     {
         _trendReader = trendReader;
         _stateStore = stateStore;
         _alarmWriter = alarmWriter;
         _dispatcher = dispatcher;
+        _prerule = prerule;
         _logger = logger;
     }
 
@@ -97,43 +100,113 @@ public class WorkerCalculationService : BackgroundService
     {
         try
         {
-            var state = await _stateStore.GetAsync(monitor.Id);
-            var result = await _dispatcher.CalculateAsync(monitor, values, state, now);
-
-            if (result.HasEvent && !string.IsNullOrEmpty(result.State))
+            // ① 前置规则检查 (对标 MonitorCenter PreruleCheck 阶段)
+            var preruleResult = await _prerule.CheckAsync(monitor);
+            if (preruleResult.ShouldSuppress)
             {
-                var alarm = new AlarmSnapshot
+                if (preruleResult.ShouldClearAlarm)
                 {
-                    MonitorId = monitor.Id,
-                    MonitorKey = monitor.Key,
-                    MonitorName = monitor.Name,
-                    StatusKey = result.State,
-                    StatusName = result.State,
-                    Value = result.TriggerValue ?? 0,
-                    OccurTime = now,
-                    ConfigVersion = monitor.LastModificationTime,
-                    WorkerId = Environment.MachineName,
-                };
+                    await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
 
-                await _alarmWriter.WriteRealtimeAlarmAsync(alarm);
-                await _alarmWriter.WriteHistoryAlarmAsync(alarm.ToAlarmEvent());
+                    var state = await _stateStore.GetAsync(monitor.Id);
+                    if (state?.PreviousStatus != null)
+                    {
+                        var clearEvent = new AlarmEvent
+                        {
+                            MonitorId = monitor.Id,
+                            MonitorKey = monitor.Key,
+                            MonitorName = monitor.Name,
+                            StatusKey = state.PreviousStatus,
+                            EventType = Shared.Enums.EventType.Clear,
+                            OccurTime = now,
+                            ClearTime = now,
+                            WorkerId = Environment.MachineName,
+                        };
+                        await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
+                    }
+                }
+
+                monitor.LastCalculateTime = now;
+                return;
             }
-            else if (string.IsNullOrEmpty(result.State) && state?.PreviousStatus != null)
+
+            // ② 规则计算 (对标 MonitorCenter RuleCalculate 阶段)
+            var result = await _dispatcher.CalculateAsync(monitor, values, now);
+
+            // 处理多状态结果 (PackageValue / RulePackageValue / MultiStateRangeDuration)
+            if (result.HasEvent)
             {
-                // 报警消除
-                var clearEvent = new AlarmEvent
+                var alarmStates = new List<string>();
+
+                if (!string.IsNullOrEmpty(result.State))
+                    alarmStates.Add(result.State);
+
+                if (result.States.Count > 0)
+                    alarmStates.AddRange(result.States);
+
+                if (result.StatesDic.Count > 0)
+                    alarmStates.AddRange(result.StatesDic.Keys);
+
+                foreach (var stateKey in alarmStates)
                 {
-                    MonitorId = monitor.Id,
-                    MonitorKey = monitor.Key,
-                    MonitorName = monitor.Name,
-                    StatusKey = state.PreviousStatus,
-                    EventType = Shared.Enums.EventType.Clear,
-                    OccurTime = now,
-                    ClearTime = now,
-                    WorkerId = Environment.MachineName,
-                };
-                await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
-                await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
+                    if (string.IsNullOrEmpty(stateKey) || stateKey == "PACKAGECOMPLETEEVENT")
+                        continue;
+
+                    var alarm = new AlarmSnapshot
+                    {
+                        MonitorId = monitor.Id,
+                        MonitorKey = monitor.Key,
+                        MonitorName = monitor.Name,
+                        StatusKey = stateKey,
+                        StatusName = stateKey,
+                        Value = result.TriggerValue ?? 0,
+                        OccurTime = now,
+                        ConfigVersion = monitor.LastModificationTime,
+                        WorkerId = Environment.MachineName,
+                    };
+
+                    await _alarmWriter.WriteRealtimeAlarmAsync(alarm);
+                }
+
+                // 写入历史事件（仅对有实质状态的报警）
+                if (alarmStates.Any(s => !string.IsNullOrEmpty(s) && s != "PACKAGECOMPLETEEVENT"))
+                {
+                    var firstState = alarmStates.First(s => !string.IsNullOrEmpty(s) && s != "PACKAGECOMPLETEEVENT");
+                    var historyAlarm = new AlarmSnapshot
+                    {
+                        MonitorId = monitor.Id,
+                        MonitorKey = monitor.Key,
+                        MonitorName = monitor.Name,
+                        StatusKey = firstState,
+                        StatusName = firstState,
+                        Value = result.TriggerValue ?? 0,
+                        OccurTime = now,
+                        ConfigVersion = monitor.LastModificationTime,
+                        WorkerId = Environment.MachineName,
+                    };
+                    await _alarmWriter.WriteHistoryAlarmAsync(historyAlarm.ToAlarmEvent());
+                }
+            }
+            else
+            {
+                var state = await _stateStore.GetAsync(monitor.Id);
+                if (state?.PreviousStatus != null)
+                {
+                    // 报警消除
+                    var clearEvent = new AlarmEvent
+                    {
+                        MonitorId = monitor.Id,
+                        MonitorKey = monitor.Key,
+                        MonitorName = monitor.Name,
+                        StatusKey = state.PreviousStatus,
+                        EventType = Shared.Enums.EventType.Clear,
+                        OccurTime = now,
+                        ClearTime = now,
+                        WorkerId = Environment.MachineName,
+                    };
+                    await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
+                    await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
+                }
             }
 
             monitor.LastCalculateTime = now;

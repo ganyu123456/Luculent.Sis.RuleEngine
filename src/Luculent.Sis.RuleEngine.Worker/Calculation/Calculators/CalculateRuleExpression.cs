@@ -1,13 +1,15 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Microsoft.Extensions.Logging;
 
 namespace Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
 
 /// <summary>
-/// 表达式规则计算器。
-/// 对标 MonitorCenter 的 CalculateRuleExpression。
+/// 表达式规则计算器。对标 MonitorCenter 的 CalculateRuleExpression。
+/// 支持变量替换和表达式求值，返回表达式结果对应的状态键。
 /// </summary>
-public class CalculateRuleExpression : RuleCalculatorBase
+public partial class CalculateRuleExpression : RuleCalculatorBase
 {
     public CalculateRuleExpression(ILogger<CalculateRuleExpression> logger) : base(logger) { }
 
@@ -19,23 +21,20 @@ public class CalculateRuleExpression : RuleCalculatorBase
         {
             var script = monitor.RuleOptions?.ExpressionScript;
             if (string.IsNullOrWhiteSpace(script))
-            {
                 return RuleCalculateResult.Empty();
-            }
 
-            // 将 data 字典中的值替换到表达式占位符中
-            // 例如: "x > 100 and y < 50" → 用 data["x"] 和 data["y"] 替换
+            // 用词边界替换标签名为实际值（避免子串匹配问题）
             var expression = script;
             foreach (var (tag, value) in data)
             {
-                if (value.HasValue)
-                {
-                    expression = expression.Replace(tag, value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                }
+                if (!value.HasValue) continue;
+                // 使用正则确保词边界匹配
+                var pattern = $@"\b{Regex.Escape(tag)}\b";
+                expression = Regex.Replace(expression, pattern,
+                    value.Value.ToString(CultureInfo.InvariantCulture));
             }
 
-            // 使用 DataTable 或自定义表达式引擎求值
-            // 此处简化: 假设表达式脚本返回的是状态键名字符串，如 "alarm" 或 "normal"
+            // 尝试用 DataTable 求布尔表达式
             try
             {
                 var dt = new System.Data.DataTable();
@@ -43,13 +42,14 @@ public class CalculateRuleExpression : RuleCalculatorBase
 
                 if (evaluated is bool boolResult && boolResult)
                 {
-                    result.State = monitor.RuleOptions?.ExpressionScript ?? "triggered";
+                    // 使用配置的状态键（不直接使用表达式文本）
+                    result.State = monitor.RuleOptions?.ExpressionStatusKey ?? "expression_triggered";
                     result.HasEvent = true;
                 }
             }
-            catch (System.Data.EvaluateException)
+            catch (System.Data.EvaluateException ex)
             {
-                result.Logs.Add($"表达式计算失败: {expression}");
+                result.Logs.Add($"表达式计算失败: {expression} — {ex.Message}");
                 result.IsSuccess = false;
             }
         }
