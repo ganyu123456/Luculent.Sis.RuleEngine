@@ -62,9 +62,10 @@ services:
     container_name: ruleengine-master
     ports:
       - "11082:11082"
+      - "11083:11083"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
-      - ASPNETCORE_URLS=http://0.0.0.0:11082
+      - ASPNETCORE_URLS=http://0.0.0.0:11082;http://0.0.0.0:11083
       - REDIS_CONNECTION=redis:6379,password=${REDIS_PASSWORD:-}
       - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;Username=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
       - Master__InstanceId=${HOSTNAME:-master-1}
@@ -89,6 +90,7 @@ services:
       - Worker__WorkerId=${HOSTNAME:-worker-unknown}
       - Worker__GrpcPort=50051
       - MASTER_API_URL=http://master:11082
+      - MASTER_GRPC_URL=http://master:11083
       - REDIS_CONNECTION=redis:6379,password=${REDIS_PASSWORD:-}
       - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;Username=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
     ports:

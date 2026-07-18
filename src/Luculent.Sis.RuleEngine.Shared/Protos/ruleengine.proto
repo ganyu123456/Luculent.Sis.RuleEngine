@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package ruleengine;
+
+option csharp_namespace = "Luculent.Sis.RuleEngine.Shared.Grpc";
+
+// Rule Engine Master ↔ Worker bidirectional streaming service.
+// Worker initiates the stream; Master pushes config updates; Worker sends heartbeats.
+service RuleEngineService {
+  rpc Connect(stream WorkerMessage) returns (stream MasterMessage);
+}
+
+message WorkerMessage {
+  oneof payload {
+    RegisterRequest register = 1;
+    Heartbeat heartbeat = 2;
+  }
+}
+
+message RegisterRequest {
+  string worker_id = 1;
+}
+
+message Heartbeat {
+  int32 monitor_count = 1;
+}
+
+message MasterMessage {
+  oneof payload {
+    ConfigPush config_push = 1;
+    ShutdownCommand shutdown = 2;
+  }
+}
+
+message ConfigPush {
+  string monitors_json = 1;  // JSON-serialized List<MonitorConfig>
+}
+
+message ShutdownCommand {
+  string reason = 1;
+}

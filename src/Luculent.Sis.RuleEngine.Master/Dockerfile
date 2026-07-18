@@ -42,8 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 
 COPY --from=build /app /app
 
-# Master HTTP API 端口
+# Master HTTP API + gRPC 端口
 EXPOSE 11082
+EXPOSE 11083
 
 # 健康检查
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \

@@ -9,10 +9,20 @@ using Luculent.Sis.RuleEngine.Worker.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// gRPC 需要 HTTP/2
+builder.WebHost.ConfigureKestrel(opts =>
+{
+    opts.ListenAnyIP(11082, listenOpts => listenOpts.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+    opts.ListenAnyIP(11083, listenOpts => listenOpts.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
+});
+
+builder.Services.AddGrpc();
+
 // ===== Master 服务注册 =====
 builder.Services.AddSingleton<ConfigurationService>();
 builder.Services.AddSingleton<PartitionService>();
 builder.Services.AddSingleton<WorkerManager>();
+builder.Services.AddSingleton<GrpcConnectionService>();
 builder.Services.AddSingleton<AlarmQueryService>();
 builder.Services.AddSingleton<HistoryAlarmService>();
 builder.Services.AddSingleton<DashboardService>();
@@ -110,6 +120,10 @@ if (!string.IsNullOrEmpty(monitorCenterUrl))
                     var result = partition.Partition(monitors, activeWorkers);
                     config.SetWorkerAssignments(result.WorkerAssignments);
                     logger.LogInformation("启动分区完成: {WorkerCount} Worker", activeWorkers.Count);
+
+                    // 通过 gRPC 推送配置到各 Worker
+                    var grpcService = app.Services.GetRequiredService<GrpcConnectionService>();
+                    await grpcService.PushToWorkersAsync(result.WorkerAssignments);
                 }
             }
         }
@@ -357,32 +371,36 @@ app.MapGet("/api/ruleengine/health", (ConfigurationService config, WorkerManager
     });
 });
 
-// ===== 后台死 Worker 检测与清理 + 自动重分区 =====
+// ===== 后台: gRPC 连接断开会自动注销 Worker 并重分区 =====
+// 额外安全网: 每 30s 检查通过 HTTP 注册但无 gRPC 连接的 Worker，清理并重分区
 _ = Task.Run(async () =>
 {
     var logger = app.Services.GetRequiredService<ILoggerFactory>()
-        .CreateLogger("DeadWorkerCleanup");
+        .CreateLogger("GrpcWorkerSync");
+    var grpcService = app.Services.GetRequiredService<GrpcConnectionService>();
     var workerManager = app.Services.GetRequiredService<WorkerManager>();
     var config = app.Services.GetRequiredService<ConfigurationService>();
     var partition = app.Services.GetRequiredService<PartitionService>();
-    var timeout = TimeSpan.FromSeconds(30);
+    var timeout = TimeSpan.FromSeconds(60);
 
     while (true)
     {
-        await Task.Delay(TimeSpan.FromSeconds(15));
+        await Task.Delay(TimeSpan.FromSeconds(30));
         try
         {
-            var deadWorkers = workerManager.GetDeadWorkers(timeout);
+            var connectedIds = new HashSet<string>(grpcService.GetConnectedWorkerIds());
+            var deadWorkers = workerManager.GetDeadWorkers(timeout)
+                .Where(w => !connectedIds.Contains(w.WorkerId))
+                .ToList();
+
             if (deadWorkers.Count > 0)
             {
                 foreach (var dead in deadWorkers)
                 {
-                    logger.LogWarning("Worker 心跳超时，标记离线: {WorkerId} (最后心跳: {LastHeartbeat})",
-                        dead.WorkerId, dead.LastHeartbeat);
+                    logger.LogWarning("Worker 无 gRPC 连接且心跳超时: {WorkerId}", dead.WorkerId);
                     await workerManager.DeregisterAsync(dead.WorkerId);
                 }
 
-                // 重新分区：将已死 Worker 的监视项分配给活跃 Worker
                 if (config.Count > 0)
                 {
                     var activeWorkers = workerManager.GetActiveWorkers();
@@ -391,11 +409,7 @@ _ = Task.Run(async () =>
                         var allMonitors = config.All.Values.ToList();
                         var result = partition.Partition(allMonitors, activeWorkers);
                         config.SetWorkerAssignments(result.WorkerAssignments);
-
-                        foreach (var (wid, monitors) in result.WorkerAssignments)
-                            await workerManager.HeartbeatAsync(wid, monitors.Count);
-
-                        logger.LogInformation("死 Worker 清理后重分区: {ActiveWorkers} Worker, {MonitorCount} 监视项",
+                        logger.LogInformation("安全网重分区: {ActiveWorkers} Worker, {MonitorCount} 监视项",
                             activeWorkers.Count, allMonitors.Count);
                     }
                 }
@@ -403,12 +417,14 @@ _ = Task.Run(async () =>
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "死 Worker 检测循环异常");
+            logger.LogError(ex, "Worker 同步循环异常");
         }
     }
 });
 
 app.UseStaticFiles();
+
+app.MapGrpcService<GrpcConnectionService>();
 
 // ===== Dashboard =====
 app.MapGet("/dashboard", () => Results.Redirect("/dashboard.html"));
