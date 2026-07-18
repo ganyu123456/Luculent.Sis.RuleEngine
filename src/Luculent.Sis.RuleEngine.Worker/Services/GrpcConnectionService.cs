@@ -62,7 +62,12 @@ public class GrpcConnectionService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Worker {WorkerId} gRPC 连接断开，5s 后重连", _workerId);
+                // Master 重启/部署导致 HTTP/2 连接断开属于正常运维操作，降级为 Info
+                var isHttp2Reset = ex.Message.Contains("HTTP/2") || ex.InnerException?.Message.Contains("HTTP/2") == true;
+                if (isHttp2Reset)
+                    _logger.LogInformation("Worker {WorkerId} gRPC 连接断开 (HTTP/2 reset, 通常是 Master 重启), 5s 后重连", _workerId);
+                else
+                    _logger.LogWarning(ex, "Worker {WorkerId} gRPC 连接断开，5s 后重连", _workerId);
             }
 
             if (!appCt.IsCancellationRequested)
@@ -158,7 +163,11 @@ public class GrpcConnectionService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Worker {WorkerId} gRPC 接收异常", _workerId);
+                var isHttp2Reset = ex.Message.Contains("HTTP/2") || ex.InnerException?.Message.Contains("HTTP/2") == true;
+                if (isHttp2Reset)
+                    _logger.LogInformation("Worker {WorkerId} gRPC 接收异常 (HTTP/2 reset), 将重连", _workerId);
+                else
+                    _logger.LogWarning(ex, "Worker {WorkerId} gRPC 接收异常", _workerId);
                 break;
             }
         }

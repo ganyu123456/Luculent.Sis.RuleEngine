@@ -77,12 +77,14 @@ public class WorkerPerformance_Tests
         out ILoggerFactory loggerFactory,
         out InMemoryAlarmWriter alarmWriter,
         out InMemoryStateStore stateStore,
-        out CountingTrendReader trendReader)
+        out CountingTrendReader trendReader,
+        out TagValueStore tagValues)
     {
         loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
         alarmWriter = new InMemoryAlarmWriter(loggerFactory.CreateLogger<InMemoryAlarmWriter>());
         stateStore = new InMemoryStateStore();
         trendReader = new CountingTrendReader(loggerFactory.CreateLogger<CountingTrendReader>());
+        tagValues = new TagValueStore();
 
         var rangeDurationCalc = new CalculateRuleRangeDuration(
             loggerFactory.CreateLogger<CalculateRuleRangeDuration>(),
@@ -118,7 +120,7 @@ public class WorkerPerformance_Tests
             dispatcher,
             prerule,
             preruleEval,
-            new TagValueStore(),
+            tagValues,
             loggerFactory.CreateLogger<WorkerCalculationService>())
         {
             WorkerId = "perf-test-worker",
@@ -126,6 +128,23 @@ public class WorkerPerformance_Tests
 
         foreach (var m in monitors)
             service.AssignedMonitors[m.Id] = m;
+
+        // 填充 TagValueStore: 模拟数据采集，让计算能取到值
+        var simValues = new Dictionary<string, double?>();
+        foreach (var m in monitors)
+        {
+            simValues[m.TagName] = 95.0;
+            var rangeRules = m.RuleOptions?.RangeDurationRules;
+            if (rangeRules != null)
+                foreach (var r in rangeRules)
+                {
+                    if (!string.IsNullOrEmpty(r.LeftTagName) && !simValues.ContainsKey(r.LeftTagName))
+                        simValues[r.LeftTagName] = 95.0;
+                    if (!string.IsNullOrEmpty(r.RightTagName) && !simValues.ContainsKey(r.RightTagName))
+                        simValues[r.RightTagName] = 50.0;
+                }
+        }
+        tagValues.Update(simValues);
 
         return service;
     }
@@ -141,7 +160,7 @@ public class WorkerPerformance_Tests
     public async Task Case1_SingleCycle_Performance()
     {
         var monitors = GenerateMonitors(MonitorCount);
-        var service = CreateService(monitors, out _, out var alarmWriter, out _, out var trendReader);
+        var service = CreateService(monitors, out _, out var alarmWriter, out _, out var trendReader, out _);
 
         // 预热
         await service.RunOneCycleAsync();
@@ -186,7 +205,7 @@ public class WorkerPerformance_Tests
     public async Task Case2_Continuous_5Minutes()
     {
         var monitors = GenerateMonitors(MonitorCount);
-        var service = CreateService(monitors, out _, out var alarmWriter, out _, out _);
+        var service = CreateService(monitors, out _, out var alarmWriter, out _, out _, out _);
 
         var gcBefore = GC.CollectionCount(2);
         var memBefore = Process.GetCurrentProcess().WorkingSet64;
@@ -254,7 +273,7 @@ public class WorkerPerformance_Tests
             for (int w = 0; w < workerCount; w++)
             {
                 var slice = allMonitors.Skip(w * perWorker).Take(perWorker).ToList();
-                var svc = CreateService(slice, out _, out _, out _, out _);
+                var svc = CreateService(slice, out _, out _, out _, out _, out _);
                 svc.WorkerId = $"perf-w{w}";
                 services.Add(svc);
             }
@@ -296,8 +315,8 @@ public class WorkerPerformance_Tests
         var monitorsOff = GenerateMonitors(testCount);
         foreach (var m in monitorsOff) m.InterfaceMonitoring.IsEnabled = false;
 
-        var svcOn = CreateService(monitorsOn, out _, out var awOn, out _, out _);
-        var svcOff = CreateService(monitorsOff, out _, out var awOff, out _, out _);
+        var svcOn = CreateService(monitorsOn, out _, out var awOn, out _, out _, out _);
+        var svcOff = CreateService(monitorsOff, out _, out var awOff, out _, out _, out _);
 
         // 预热
         await svcOn.RunOneCycleAsync();

@@ -37,6 +37,8 @@ public partial class PreruleEvaluationService
         var definitions = _defStore.GetAll();
         if (definitions.Count == 0) return;
 
+        _logger.LogInformation("前置规则评估开始: {Count} 条", definitions.Count);
+
         foreach (var def in definitions)
         {
             if (ct.IsCancellationRequested) break;
@@ -44,11 +46,11 @@ public partial class PreruleEvaluationService
             {
                 bool state = await EvaluateOneAsync(def);
                 _stateStore.SetState(def.Id, state);
+                _logger.LogInformation("前置规则 {Id} = {State}", def.Id, state);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "前置规则 {Id} 评估失败", def.Id);
-                // 评估失败时保持上一次的状态（不更新）
             }
         }
     }
@@ -76,27 +78,54 @@ public partial class PreruleEvaluationService
     private async Task<Dictionary<string, double>> FetchSourceDataAsync(
         List<PreruleSourceDefinition> sources)
     {
-        var keys = sources
-            .Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key)
-            .Where(k => !string.IsNullOrEmpty(k))
-            .Distinct()
-            .ToList();
-
         var result = new Dictionary<string, double>();
-        if (keys.Count == 0) return result;
 
-        try
+        // Static (SourceType=1): SourceKey 就是常量值，直接 parse，不用查 TrendDB
+        foreach (var s in sources.Where(s => s.SourceType == 1))
         {
-            var values = await _trendReader.ReadBatchAsync(keys);
-            foreach (var (key, value) in values)
+            if (double.TryParse(s.SourceKey, NumberStyles.Float, CultureInfo.InvariantCulture, out var val))
             {
-                if (value.HasValue)
-                    result[key] = value.Value;
+                if (!string.IsNullOrEmpty(s.Key))
+                    result[s.Key] = val;
+                if (!string.IsNullOrEmpty(s.SourceKey))
+                    result[s.SourceKey] = val;
             }
         }
-        catch (Exception ex)
+
+        // RealDB (SourceType=3): SourceKey 是 TrendDB 标签名
+        var realSources = sources.Where(s => s.SourceType == 3).ToList();
+        if (realSources.Count > 0)
         {
-            _logger.LogDebug(ex, "前置规则数据源批量读取失败");
+            var tagNames = realSources
+                .Select(s => s.SourceKey)
+                .Where(k => !string.IsNullOrEmpty(k))
+                .Distinct()
+                .ToList();
+
+            if (tagNames.Count > 0)
+            {
+                try
+                {
+                    var values = await _trendReader.ReadBatchAsync(tagNames);
+                    foreach (var (tagName, value) in values)
+                    {
+                        if (!value.HasValue) continue;
+
+                        result[tagName] = value.Value;
+
+                        // 同时存储别名映射，让 EvaluateExpression 和 EvaluateRangeDuration 都能查到
+                        foreach (var rs in realSources.Where(s => s.SourceKey == tagName))
+                        {
+                            if (!string.IsNullOrEmpty(rs.Key))
+                                result[rs.Key] = value.Value;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "前置规则 RealDB 数据源读取失败");
+                }
+            }
         }
 
         return result;
@@ -133,12 +162,12 @@ public partial class PreruleEvaluationService
         if (def.RuleRangeDurations.Count == 0) return false;
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        bool anyHit = false;
 
         foreach (var rule in def.RuleRangeDurations.OrderBy(r => r.Priority))
         {
             if (!rule.IsEnabled) continue;
 
-            // 获取左值和右值
             sourceData.TryGetValue(rule.LeftSourceKey, out var leftVal);
             sourceData.TryGetValue(rule.RightSourceKey, out var rightVal);
 
@@ -154,6 +183,7 @@ public partial class PreruleEvaluationService
                 var elapsed = (now - _lastDurations[durationKey]) / 1000.0;
                 if (elapsed >= rule.DurationSecond)
                 {
+                    anyHit = true;
                     if (rule.BreakOnHit) return true;
                 }
             }
@@ -163,7 +193,7 @@ public partial class PreruleEvaluationService
             }
         }
 
-        return false;
+        return anyHit;
     }
 
     private static bool Compare(double left, int symbolType, double right)

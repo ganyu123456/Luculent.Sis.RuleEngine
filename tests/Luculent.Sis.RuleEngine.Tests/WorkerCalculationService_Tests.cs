@@ -111,8 +111,9 @@ public class WorkerCalculationService_Tests
 
         await InvokeAsync(monitor, values, now, preloaded, modifiedStates);
 
+        // 状态未变化 → 实时报警和历史事件都不写入
         _alarmWriterMock.Verify(a => a.WriteRealtimeAlarmAsync(
-            It.IsAny<AlarmSnapshot>()), Times.AtLeastOnce);
+            It.IsAny<AlarmSnapshot>()), Times.Never);
         _alarmWriterMock.Verify(a => a.WriteHistoryAlarmAsync(
             It.IsAny<AlarmEvent>()), Times.Never);
 
@@ -160,9 +161,10 @@ public class WorkerCalculationService_Tests
 
         await InvokeAsync(monitor, values, now, preloaded, modifiedStates);
 
+        // 状态未变化 (已是正常态) → 不写历史事件，也不清除实时报警
         _alarmWriterMock.Verify(a => a.WriteHistoryAlarmAsync(
             It.IsAny<AlarmEvent>()), Times.Never);
-        _alarmWriterMock.Verify(a => a.ClearRealtimeAlarmAsync(It.IsAny<string>()), Times.Once);
+        _alarmWriterMock.Verify(a => a.ClearRealtimeAlarmAsync(It.IsAny<string>()), Times.Never);
 
         // 无状态变更
         Assert.False(modifiedStates.ContainsKey(monitor.Id));

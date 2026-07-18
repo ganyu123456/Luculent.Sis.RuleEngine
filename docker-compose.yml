@@ -70,6 +70,7 @@ services:
       - CLICKHOUSE_CONNECTION=Host=clickhouse;Port=8123;Database=ruleengine;Username=ruleengine;Password=${CLICKHOUSE_PASSWORD:-RuleEngine2026!}
       - Master__InstanceId=${HOSTNAME:-master-1}
       - MonitorCenter__ApiUrl=http://host.docker.internal:11080
+      - MonitorCenter__DatabaseConnection=Host=host.docker.internal;Port=5433;Username=postgres;Password=luculent1!;Database=sis1
     depends_on:
       redis:
         condition: service_healthy

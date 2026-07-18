@@ -29,6 +29,7 @@ builder.Services.AddSingleton<HistoryAlarmService>();
 builder.Services.AddSingleton<DashboardService>();
 builder.Services.AddSingleton<PreruleStateStore>();
 builder.Services.AddSingleton<PreruleDefinitionStore>();
+builder.Services.AddSingleton<PreruleDatabaseReader>();
 
 // ===== Monitor Center 集成 =====
 var monitorCenterUrl = builder.Configuration.GetValue<string>("MonitorCenter:ApiUrl");
@@ -137,12 +138,35 @@ if (!string.IsNullOrEmpty(monitorCenterUrl))
                 {
                     var preruleStore = app.Services.GetRequiredService<PreruleDefinitionStore>();
                     preruleStore.LoadAll(prerules);
-                    logger.LogInformation("启动加载前置规则: {Count} 条", prerules.Count);
+                    logger.LogInformation("启动加载前置规则: {Count} 条 (来自 MonitorCenter)", prerules.Count);
                 }
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "从 Monitor Center 拉取前置规则失败");
+                logger.LogWarning(ex, "从 Monitor Center 拉取前置规则失败，尝试数据库 fallback");
+            }
+
+            // Fallback: 如果未加载任何前置规则，尝试从数据库直读
+            var store = app.Services.GetRequiredService<PreruleDefinitionStore>();
+            if (store.GetAll().Count == 0)
+            {
+                try
+                {
+                    var dbReader = app.Services.GetRequiredService<PreruleDatabaseReader>();
+                    if (dbReader.IsAvailable)
+                    {
+                        var prerules = await dbReader.ReadAllAsync();
+                        if (prerules.Count > 0)
+                        {
+                            store.LoadAll(prerules);
+                            logger.LogInformation("数据库 fallback 加载前置规则: {Count} 条", prerules.Count);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "数据库 fallback 也失败，前置规则为空");
+                }
             }
         }
         catch (Exception ex)
@@ -381,6 +405,9 @@ var adminGroup = app.MapGroup("/api/ruleengine/admin");
 adminGroup.MapPost("/load-prerules", async (HttpRequest request,
     PreruleDefinitionStore preruleStore,
     GrpcConnectionService grpcService,
+    ConfigurationService config,
+    PartitionService partition,
+    WorkerManager workers,
     ILogger<Program> logger) =>
 {
     try
@@ -396,9 +423,19 @@ adminGroup.MapPost("/load-prerules", async (HttpRequest request,
         preruleStore.LoadAll(prerules);
         logger.LogInformation("Admin: 加载 {Count} 条前置规则", prerules.Count);
 
-        // 推送配置到所有Worker
-        var assignments = preruleStore.GetAll();
-        logger.LogInformation("Admin: 推送前置规则到 Workers, {Count} 条", prerules.Count);
+        // 推送配置到所有Worker（包含前置规则）
+        if (config.Count > 0)
+        {
+            var activeWorkers = workers.GetActiveWorkers();
+            if (activeWorkers.Count > 0)
+            {
+                var allMonitors = config.All.Values.ToList();
+                var result = partition.Partition(allMonitors, activeWorkers);
+                config.SetWorkerAssignments(result.WorkerAssignments);
+                await grpcService.PushToWorkersAsync(result.WorkerAssignments);
+                logger.LogInformation("Admin: 已推送前置规则到 {WorkerCount} Workers", activeWorkers.Count);
+            }
+        }
 
         return Results.Ok(new { Count = prerules.Count });
     }

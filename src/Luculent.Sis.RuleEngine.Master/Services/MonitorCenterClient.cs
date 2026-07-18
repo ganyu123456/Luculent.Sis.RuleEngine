@@ -14,6 +14,8 @@ public class MonitorCenterClient
     private readonly HttpClient _http;
     private readonly ILogger<MonitorCenterClient> _logger;
 
+    private const int BatchSize = 5000;
+
     public MonitorCenterClient(HttpClient http, ILogger<MonitorCenterClient> logger)
     {
         _http = http;
@@ -21,55 +23,87 @@ public class MonitorCenterClient
     }
 
     /// <summary>
-    /// 从 Monitor Center 拉取全量监视项。
-    /// 调用 ABP 动态 Web API: POST /api/services/app/monitorDataForPublic/GetAllMonitors
+    /// 从 Monitor Center 分批拉取全量监视项。
+    /// 每批 {BatchSize} 条，循环拉取直到无更多数据。
     /// </summary>
     public async Task<List<MonitorConfig>> FetchAllMonitorsAsync(CancellationToken ct = default)
     {
-        _logger.LogInformation("从 Monitor Center 拉取全量监视项: {Url}", _http.BaseAddress);
+        _logger.LogInformation("从 Monitor Center 分批拉取监视项: {Url}", _http.BaseAddress);
 
-        var url = "/api/services/monitorcenter/monitorDataForPublic/GetAllMonitors";
-        var response = await _http.GetAsync(url, ct);
-        response.EnsureSuccessStatusCode();
+        var allMonitors = new List<MonitorConfig>();
+        var skip = 0;
 
-        // ABP 响应包装格式: { "result": [...], "success": true }
-        using var doc = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
-        var root = doc!.RootElement;
+        while (!ct.IsCancellationRequested)
+        {
+            var url = $"/api/services/monitorcenter/monitorDataForPublic/GetAllMonitors?skip={skip}&take={BatchSize}";
+            var response = await _http.GetAsync(url, ct);
+            response.EnsureSuccessStatusCode();
 
-        var items = root.TryGetProperty("result", out var resultProp)
-            ? resultProp
-            : root;
+            using var doc = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
+            var root = doc!.RootElement;
 
-        var monitors = JsonSerializer.Deserialize<List<MonitorConfig>>(items.GetRawText(),
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        _logger.LogInformation("从 Monitor Center 拉取完成: {Count} 个监视项", monitors?.Count ?? 0);
+            var items = root.TryGetProperty("result", out var resultProp)
+                ? resultProp
+                : root;
 
-        return monitors ?? new List<MonitorConfig>();
+            var batch = JsonSerializer.Deserialize<List<MonitorConfig>>(items.GetRawText(),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? new List<MonitorConfig>();
+
+            if (batch.Count == 0)
+                break;
+
+            allMonitors.AddRange(batch);
+            _logger.LogDebug("MonitorCenter 批次: skip={Skip}, count={Count}", skip, batch.Count);
+            skip += batch.Count;
+
+            if (batch.Count < BatchSize)
+                break;
+        }
+
+        _logger.LogInformation("从 Monitor Center 拉取完成: {Count} 个监视项", allMonitors.Count);
+        return allMonitors;
     }
 
     /// <summary>
-    /// 从 Monitor Center 拉取全量前置规则定义。
-    /// 调用 ABP 动态 Web API: GET /api/services/monitorcenter/monitorDataForPublic/GetAllPrerules
+    /// 从 Monitor Center 分批拉取全量前置规则定义。
     /// </summary>
     public async Task<List<PreruleDefinition>> FetchAllPrerulesAsync(CancellationToken ct = default)
     {
-        _logger.LogInformation("从 Monitor Center 拉取全量前置规则: {Url}", _http.BaseAddress);
+        _logger.LogInformation("从 Monitor Center 分批拉取前置规则: {Url}", _http.BaseAddress);
 
-        var url = "/api/services/monitorcenter/monitorDataForPublic/GetAllPrerules";
-        var response = await _http.GetAsync(url, ct);
-        response.EnsureSuccessStatusCode();
+        var allPrerules = new List<PreruleDefinition>();
+        var skip = 0;
 
-        using var doc = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
-        var root = doc!.RootElement;
+        while (!ct.IsCancellationRequested)
+        {
+            var url = $"/api/services/monitorcenter/monitorDataForPublic/GetAllPrerules?skip={skip}&take={BatchSize}";
+            var response = await _http.GetAsync(url, ct);
+            response.EnsureSuccessStatusCode();
 
-        var items = root.TryGetProperty("result", out var resultProp)
-            ? resultProp
-            : root;
+            using var doc = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
+            var root = doc!.RootElement;
 
-        var prerules = JsonSerializer.Deserialize<List<PreruleDefinition>>(items.GetRawText(),
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        _logger.LogInformation("从 Monitor Center 拉取前置规则完成: {Count} 条", prerules?.Count ?? 0);
+            var items = root.TryGetProperty("result", out var resultProp)
+                ? resultProp
+                : root;
 
-        return prerules ?? new List<PreruleDefinition>();
+            var batch = JsonSerializer.Deserialize<List<PreruleDefinition>>(items.GetRawText(),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? new List<PreruleDefinition>();
+
+            if (batch.Count == 0)
+                break;
+
+            allPrerules.AddRange(batch);
+            _logger.LogDebug("MonitorCenter 前置规则批次: skip={Skip}, count={Count}", skip, batch.Count);
+            skip += batch.Count;
+
+            if (batch.Count < BatchSize)
+                break;
+        }
+
+        _logger.LogInformation("从 Monitor Center 拉取前置规则完成: {Count} 条", allPrerules.Count);
+        return allPrerules;
     }
 }
