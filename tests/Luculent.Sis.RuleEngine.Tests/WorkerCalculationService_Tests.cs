@@ -3,6 +3,7 @@ using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
+using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
 using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -11,7 +12,6 @@ namespace Luculent.Sis.RuleEngine.Tests;
 
 public class WorkerCalculationService_Tests
 {
-    private readonly Mock<ITrendDataReader> _trendReaderMock;
     private readonly Mock<IStateStore> _stateStoreMock;
     private readonly Mock<IAlarmWriter> _alarmWriterMock;
     private readonly Mock<IRuleDispatcher> _dispatcherMock;
@@ -20,14 +20,12 @@ public class WorkerCalculationService_Tests
 
     public WorkerCalculationService_Tests()
     {
-        _trendReaderMock = new Mock<ITrendDataReader>();
         _stateStoreMock = new Mock<IStateStore>();
         _alarmWriterMock = new Mock<IAlarmWriter>();
         _dispatcherMock = new Mock<IRuleDispatcher>();
         _preruleMock = new Mock<IPrerulePipeline>();
 
         _service = new WorkerCalculationService(
-            _trendReaderMock.Object,
             _stateStoreMock.Object,
             _alarmWriterMock.Object,
             _dispatcherMock.Object,
@@ -37,6 +35,7 @@ public class WorkerCalculationService_Tests
                 new PreruleStateStore(),
                 Mock.Of<ITrendDataReader>(),
                 Mock.Of<ILogger<PreruleEvaluationService>>()),
+            new TagValueStore(),
             Mock.Of<ILogger<WorkerCalculationService>>())
         {
             WorkerId = "test-worker"

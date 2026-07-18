@@ -5,6 +5,7 @@ using Luculent.Sis.RuleEngine.Worker.Calculation;
 using Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
 using Luculent.Sis.RuleEngine.Worker.DataSource;
 using Luculent.Sis.RuleEngine.Worker.Services;
+using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
 using Luculent.Sis.RuleEngine.Worker.Storage;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -81,6 +82,10 @@ if (!string.IsNullOrEmpty(masterApiUrl))
     });
     builder.Services.AddSingleton<MasterConfigClient>();
 }
+
+// ===== 数据采集 (模式 A: 采集与计算分离) =====
+builder.Services.AddSingleton<TagValueStore>();
+builder.Services.AddHostedService<DataAcquisitionService>();
 
 // ===== 主计算服务 =====
 builder.Services.AddSingleton<WorkerCalculationService>();

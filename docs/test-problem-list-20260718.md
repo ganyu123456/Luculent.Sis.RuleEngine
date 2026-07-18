@@ -15,6 +15,20 @@ Rule Engine 采用**纯事件流模型**：
 - 事件配对/持续时长计算/StatusKey→StatusName 映射均由 MonitorCenter 侧完成
 - Rule Engine 只负责：规则计算 → 写事件 → 提供原始事件流查询
 
+**计算架构（模式 A — 采集与计算分离）：**
+```
+DataAcquisitionService (PeriodicTimer 1s)
+  → TrendDB.ReadBatchAsync(allTags)
+  → TagValueStore.Update(values)
+        ↓
+WorkerCalculationService (PeriodicTimer 1s, SemaphoreSlim 防重叠)
+  → TagValueStore.Values (读缓存，不查 TrendDB)
+  → 过滤到期监视项 → Parallel.ForEachAsync
+  → 前置规则检查 → 规则计算 → 写事件
+```
+- 采集和计算解耦，TrendDB 每秒只查 1 次（之前每 100ms 查 1 次，每秒 5-6 次）
+- 计算超时自动跳过下一周期，不排队堆积
+
 ---
 
 ## 一、功能缺陷
@@ -99,10 +113,12 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 ### P1 [中] ClickHouse CPU 持续 86%
 
 **观察**: `docker stats` 显示 `ruleengine-clickhouse` CPU 86.26%。
-**根因**: 2 个 Worker 每 100ms 写一批事件，频繁的 INSERT + 可能的 MERGE 操作。
+**分析**:
+- Worker CPU 侧：已通过模式 A 解决（采集与计算分离、1s 周期替代 100ms 空转，预计 Worker CPU 降 70-80%）
+- ClickHouse CPU 侧：写入频率未变（批量 INSERT 依然由事件驱动），CPU 高主要是 ClickHouse 自身的 merge 开销
 **建议**: 
-- 增大 ClickHouseAlarmWriter 的 batch 间隔（当前为实时写入）
-- 或合并为每秒写入一次
+- 调整 ClickHouse merge 参数（`max_bytes_to_merge_at_max_space_in_pool` 等）
+- 或增大 `ClickHouseAlarmWriter` 的 batch size（当前 500/批）
 
 ---
 
@@ -151,7 +167,9 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 
 ---
 
-## 四、已完成的架构清理 (2026-07-18)
+## 四、已完成的架构清理与优化 (2026-07-18)
+
+### 4.1 旧方案残留清理
 
 以下旧方案残留已全部清理，Rule Engine 为纯事件流模型：
 
@@ -166,6 +184,23 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 | `EventTypes` 过滤参数 | 从 API、DTO、RuleEngineClient 全部移除 |
 | `AlarmSnapshot.ToAlarmEvent()` | 已删除（死代码） |
 | `CalculationState.PreviousEventOccurTime` | 已删除 |
+
+### 4.2 计算架构优化（模式 A）
+
+| 项目 | 优化前 | 优化后 |
+|------|--------|--------|
+| TrendDB 查询频率 | 每 100ms（每秒 5-6 次，含空转） | 每 1s（固定周期，不空转） |
+| 数据流 | 计算循环内直接查 TrendDB | DataAcquisitionService → TagValueStore → 计算读缓存 |
+| 重叠保护 | 无（可能堆积） | SemaphoreSlim(1,1)，超时跳过 |
+| 资源预估 | Worker CPU 空转 80% 循环 | Worker CPU 降 70-80% |
+
+新增文件：
+- `Worker/DataAcquisition/TagValueStore.cs` — 线程安全实时值缓存
+- `Worker/DataAcquisition/DataAcquisitionService.cs` — 1s 周期数据采集 BackgroundService
+
+修改文件：
+- `Worker/WorkerCalculationService.cs` — 移除 TrendDB 查询依赖，改为读 TagValueStore 缓存
+- `Worker/Program.cs` — 注册 TagValueStore + DataAcquisitionService
 
 ---
 
@@ -188,4 +223,4 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 | P2 | F3 - Key vs SourceKey | 前置规则数据正确性 |
 | P3 | F4 - Worker 重启报警波动 | 影响可控 |
 | P3 | F5 - 闭环验证开环事件 | 功能正常，仅验证提示 |
-| P3 | P1 - ClickHouse CPU | 性能优化 |
+| P3 | P1 - ClickHouse CPU | Worker 侧已通过模式 A 优化，ClickHouse 侧需单独调整 merge 参数 |

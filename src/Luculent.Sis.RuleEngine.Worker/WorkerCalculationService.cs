@@ -2,63 +2,63 @@ using System.Collections.Concurrent;
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
+using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
 using Microsoft.Extensions.Logging;
 
 namespace Luculent.Sis.RuleEngine.Worker;
 
 /// <summary>
-/// Worker 主计算循环。BackgroundService 由 .NET Host 管理生命周期。
+/// Worker 主计算服务。BackgroundService 由 .NET Host 管理生命周期。
+///
+/// 架构（模式 A）:
+///   DataAcquisitionService (1s) → TagValueStore → WorkerCalculationService (1s)
+///   采集与计算分离，计算只读缓存，不直接查 TrendDB。
 /// </summary>
 public class WorkerCalculationService : BackgroundService
 {
-    private readonly ITrendDataReader _trendReader;
     private readonly IStateStore _stateStore;
     private readonly IAlarmWriter _alarmWriter;
     private readonly IRuleDispatcher _dispatcher;
     private readonly IPrerulePipeline _prerule;
     private readonly PreruleEvaluationService _preruleEval;
+    private readonly TagValueStore _tagValues;
     private readonly ILogger<WorkerCalculationService> _logger;
+    private readonly SemaphoreSlim _cycleLock = new(1, 1);
 
     /// <summary>
     /// 分配给本 Worker 的监控项。Master 通过 gRPC 推送后更新。
     /// </summary>
     public ConcurrentDictionary<string, MonitorConfig> AssignedMonitors { get; } = new();
 
-    /// <summary>
-    /// Worker 标识，用于在报警中区分不同 Worker。
-    /// </summary>
     public string WorkerId { get; set; } = Environment.MachineName;
 
     private volatile bool _stateRecovered;
     private long _lastStateRecoveryTimeMs;
 
     public WorkerCalculationService(
-        ITrendDataReader trendReader,
         IStateStore stateStore,
         IAlarmWriter alarmWriter,
         IRuleDispatcher dispatcher,
         IPrerulePipeline prerule,
         PreruleEvaluationService preruleEval,
+        TagValueStore tagValues,
         ILogger<WorkerCalculationService> logger)
     {
-        _trendReader = trendReader;
         _stateStore = stateStore;
         _alarmWriter = alarmWriter;
         _dispatcher = dispatcher;
         _prerule = prerule;
         _preruleEval = preruleEval;
+        _tagValues = tagValues;
         _logger = logger;
     }
 
     /// <summary>
-    /// 执行单个计算周期。暴露为 public 供性能测试使用。
+    /// 收集所有监视项关联的 tag 名，供 DataAcquisitionService 批量采集。
     /// </summary>
-    public async Task<int> RunOneCycleAsync(CancellationToken ct = default)
+    public HashSet<string> GetAllTagNames()
     {
-        if (AssignedMonitors.IsEmpty)
-            return 0;
-
-        var tagNames = new HashSet<string>(
+        var tags = new HashSet<string>(
             AssignedMonitors.Values
                 .Select(m => m.TagName)
                 .Where(t => !string.IsNullOrEmpty(t)));
@@ -69,28 +69,33 @@ public class WorkerCalculationService : BackgroundService
             if (ruleOpts?.RangeDurationRules != null)
                 foreach (var r in ruleOpts.RangeDurationRules)
                 {
-                    if (!string.IsNullOrEmpty(r.LeftTagName) && !tagNames.Contains(r.LeftTagName))
-                        tagNames.Add(r.LeftTagName);
-                    if (!string.IsNullOrEmpty(r.RightTagName) && !tagNames.Contains(r.RightTagName))
-                        tagNames.Add(r.RightTagName);
+                    if (!string.IsNullOrEmpty(r.LeftTagName)) tags.Add(r.LeftTagName);
+                    if (!string.IsNullOrEmpty(r.RightTagName)) tags.Add(r.RightTagName);
                 }
             if (ruleOpts?.RangeFrequencyRules != null)
                 foreach (var r in ruleOpts.RangeFrequencyRules)
                 {
-                    if (!string.IsNullOrEmpty(r.LeftTagName) && !tagNames.Contains(r.LeftTagName))
-                        tagNames.Add(r.LeftTagName);
-                    if (!string.IsNullOrEmpty(r.RightTagName) && !tagNames.Contains(r.RightTagName))
-                        tagNames.Add(r.RightTagName);
+                    if (!string.IsNullOrEmpty(r.LeftTagName)) tags.Add(r.LeftTagName);
+                    if (!string.IsNullOrEmpty(r.RightTagName)) tags.Add(r.RightTagName);
                 }
-            if (!string.IsNullOrEmpty(ruleOpts?.WallTemperatureOpts?.TemperatureTag)
-                && !tagNames.Contains(ruleOpts.WallTemperatureOpts.TemperatureTag))
-                tagNames.Add(ruleOpts.WallTemperatureOpts.TemperatureTag);
-            if (!string.IsNullOrEmpty(ruleOpts?.WallTemperatureOpts?.ReferenceTag)
-                && !tagNames.Contains(ruleOpts.WallTemperatureOpts.ReferenceTag))
-                tagNames.Add(ruleOpts.WallTemperatureOpts.ReferenceTag);
+            if (!string.IsNullOrEmpty(ruleOpts?.WallTemperatureOpts?.TemperatureTag))
+                tags.Add(ruleOpts.WallTemperatureOpts.TemperatureTag);
+            if (!string.IsNullOrEmpty(ruleOpts?.WallTemperatureOpts?.ReferenceTag))
+                tags.Add(ruleOpts.WallTemperatureOpts.ReferenceTag);
         }
 
-        var values = await _trendReader.ReadBatchAsync(tagNames);
+        return tags;
+    }
+
+    /// <summary>
+    /// 执行单个计算周期（读取缓存值）。暴露为 public 供测试使用。
+    /// </summary>
+    public async Task<int> RunOneCycleAsync(CancellationToken ct = default)
+    {
+        if (AssignedMonitors.IsEmpty)
+            return 0;
+
+        var values = _tagValues.Values;
         var now = DateTime.UtcNow;
 
         var dueMonitors = AssignedMonitors.Values
@@ -100,15 +105,13 @@ public class WorkerCalculationService : BackgroundService
         if (dueMonitors.Count == 0)
             return 0;
 
-        // 批量预加载状态，避免 N 次独立 I/O
         var monitorIds = dueMonitors.Select(m => m.Id).ToList();
         var preloadedStates = await _stateStore.GetBatchAsync(monitorIds);
 
-        // Worker 状态恢复：对 StateStore 中缺失的 monitor 从 ClickHouse 查询最后事件恢复 PreviousStatus。
-        // 启动后首次恢复延迟 2 秒，之后每 30 秒重新检查一次（处理 Master 重分区导致的 monitor 变更）。
+        // 状态恢复: 缺失的状态从 ClickHouse 查询最后事件恢复
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var shouldRecover = !_stateRecovered
-            || (_stateRecovered && nowMs - _lastStateRecoveryTimeMs > 30_000);
+            || nowMs - _lastStateRecoveryTimeMs > 30_000;
         if (shouldRecover)
         {
             var missingIds = monitorIds.Where(id => !preloadedStates.ContainsKey(id)).ToList();
@@ -144,7 +147,6 @@ public class WorkerCalculationService : BackgroundService
                 return new ValueTask(ProcessMonitorAsync(m, values, now, preloaded, modifiedStates, innerCt));
             });
 
-        // 批量保存修改后的状态
         if (!modifiedStates.IsEmpty)
         {
             var batch = new Dictionary<string, CalculationState>(modifiedStates);
@@ -156,12 +158,12 @@ public class WorkerCalculationService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        _logger.LogInformation("Worker 计算服务启动");
+        _logger.LogInformation("Worker 计算服务启动 (1s 周期, 读缓存)");
 
         // 前置规则评估循环（独立运行，10s 周期）
         _ = Task.Run(async () =>
         {
-            await Task.Delay(3000, ct); // 等待初始配置到达
+            await Task.Delay(3000, ct);
             while (!ct.IsCancellationRequested)
             {
                 try
@@ -177,20 +179,36 @@ public class WorkerCalculationService : BackgroundService
             }
         }, ct);
 
+        // 主计算循环：1s PeriodicTimer，读 TagValueStore 缓存，不查 TrendDB
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                var processed = await RunOneCycleAsync(ct);
-                if (processed == 0)
-                    await Task.Delay(100, ct);
+                await timer.WaitForNextTickAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            // SemaphoreSlim 防重叠：上一周期未完成则跳过本周期
+            if (!await _cycleLock.WaitAsync(0, ct))
+                continue;
+
+            try
+            {
+                await RunOneCycleAsync(ct);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Worker 计算循环异常");
             }
-
-            await Task.Delay(100, ct);
+            finally
+            {
+                _cycleLock.Release();
+            }
         }
 
         _logger.LogInformation("Worker 计算服务停止");
@@ -206,7 +224,7 @@ public class WorkerCalculationService : BackgroundService
     {
         try
         {
-            // ① 前置规则检查 (对标 MonitorCenter PreruleCheck 阶段)
+            // ① 前置规则检查
             var preruleResult = await _prerule.CheckAsync(monitor);
             if (preruleResult.ShouldSuppress)
             {
@@ -247,7 +265,7 @@ public class WorkerCalculationService : BackgroundService
                 return;
             }
 
-            // ② 规则计算 (对标 MonitorCenter RuleCalculate 阶段)
+            // ② 规则计算
             var result = await _dispatcher.CalculateAsync(monitor, values, now);
             var state = preloadedState
                 ?? new CalculationState { MonitorId = monitor.Id, PreviousStatus = "" };
@@ -293,7 +311,7 @@ public class WorkerCalculationService : BackgroundService
                 await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
             }
 
-            // 状态变更流: newStatus != PreviousStatus → 写入事件
+            // ③ 状态变更 → 写入事件
             if (newStatus != state.PreviousStatus)
             {
                 var lastEventId = state.PreviousEventId;

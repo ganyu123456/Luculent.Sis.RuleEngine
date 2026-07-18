@@ -5,6 +5,7 @@ using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
 using Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
+using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
 using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
 
@@ -112,12 +113,12 @@ public class WorkerPerformance_Tests
             loggerFactory.CreateLogger<PrerulePipeline>());
 
         var service = new WorkerCalculationService(
-            trendReader,
             stateStore,
             alarmWriter,
             dispatcher,
             prerule,
             preruleEval,
+            new TagValueStore(),
             loggerFactory.CreateLogger<WorkerCalculationService>())
         {
             WorkerId = "perf-test-worker",
