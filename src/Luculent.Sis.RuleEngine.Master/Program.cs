@@ -17,7 +17,11 @@ builder.WebHost.ConfigureKestrel(opts =>
     opts.ListenAnyIP(11083, listenOpts => listenOpts.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
 });
 
-builder.Services.AddGrpc();
+builder.Services.AddGrpc(opts =>
+{
+    opts.MaxReceiveMessageSize = 50 * 1024 * 1024; // 50MB — 支持 10K+ 监视项配置推送
+    opts.MaxSendMessageSize = 50 * 1024 * 1024;
+});
 
 // ===== Master 服务注册 =====
 builder.Services.AddSingleton<ConfigurationService>();

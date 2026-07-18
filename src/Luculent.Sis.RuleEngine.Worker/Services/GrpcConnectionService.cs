@@ -78,7 +78,11 @@ public class GrpcConnectionService : IAsyncDisposable
     private async Task ConnectAndServeAsync(CancellationToken appCt)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(appCt);
-        _channel = GrpcChannel.ForAddress(_masterUrl);
+        _channel = GrpcChannel.ForAddress(_masterUrl, new GrpcChannelOptions
+        {
+            MaxReceiveMessageSize = 50 * 1024 * 1024, // 50MB — 支持 10K+ 监视项配置
+            MaxSendMessageSize = 50 * 1024 * 1024,
+        });
         var client = new RuleEngineService.RuleEngineServiceClient(_channel);
         _call = client.Connect(cancellationToken: _cts.Token);
 

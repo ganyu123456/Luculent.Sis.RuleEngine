@@ -14,7 +14,8 @@ public class MonitorCenterClient
     private readonly HttpClient _http;
     private readonly ILogger<MonitorCenterClient> _logger;
 
-    private const int BatchSize = 5000;
+    private const int BatchSize = 20000;
+    private const int MaxIterations = 100;
 
     public MonitorCenterClient(HttpClient http, ILogger<MonitorCenterClient> logger)
     {
@@ -32,9 +33,15 @@ public class MonitorCenterClient
 
         var allMonitors = new List<MonitorConfig>();
         var skip = 0;
+        var iteration = 0;
 
         while (!ct.IsCancellationRequested)
         {
+            if (++iteration > MaxIterations)
+            {
+                _logger.LogError("MonitorCenter 分页达到最大迭代次数 {Max}, 中止", MaxIterations);
+                break;
+            }
             var url = $"/api/services/monitorcenter/monitorDataForPublic/GetAllMonitors?skip={skip}&take={BatchSize}";
             var response = await _http.GetAsync(url, ct);
             response.EnsureSuccessStatusCode();
@@ -74,9 +81,15 @@ public class MonitorCenterClient
 
         var allPrerules = new List<PreruleDefinition>();
         var skip = 0;
+        var iteration = 0;
 
         while (!ct.IsCancellationRequested)
         {
+            if (++iteration > MaxIterations)
+            {
+                _logger.LogError("MonitorCenter 前置规则分页达到最大迭代次数 {Max}, 中止", MaxIterations);
+                break;
+            }
             var url = $"/api/services/monitorcenter/monitorDataForPublic/GetAllPrerules?skip={skip}&take={BatchSize}";
             var response = await _http.GetAsync(url, ct);
             response.EnsureSuccessStatusCode();
