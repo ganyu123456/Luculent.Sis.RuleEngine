@@ -97,8 +97,70 @@ public class RedisAlarmWriter : IAlarmWriter, IDisposable
         return JsonSerializer.Deserialize<AlarmSnapshot>(json.ToString());
     }
 
-    public Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
-        => Task.FromResult(new Dictionary<string, string?>());
+    /// <summary>
+    /// 从 Redis 批量恢复监视项的上一次状态。
+    /// 1. SMEMBERS 获取活跃报警 ID 集合 (Set, O(N) 成员数)
+    /// 2. 请求的 ID 在 Set 中 → Pipeline HGET status_key → 返回状态键
+    /// 3. 请求的 ID 不在 Set 中 → PreviousStatus = "" (正常态)
+    /// </summary>
+    public async Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
+    {
+        var idList = monitorIds.ToList();
+        if (idList.Count == 0)
+            return new Dictionary<string, string?>();
+
+        // Step 1: 获取所有活跃报警 ID
+        var activeIds = new HashSet<string>();
+        try
+        {
+            var members = await _db.SetMembersAsync(ActiveAlarmsSetKey);
+            foreach (var m in members)
+                activeIds.Add(m.ToString());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Redis SMEMBERS 失败，回退到空状态: {Count} 个 monitor", idList.Count);
+            return idList.ToDictionary(id => id, _ => (string?)"");
+        }
+
+        // Step 2: 收集请求 ID 中在活跃集合内的
+        var activeRequested = idList.Where(id => activeIds.Contains(id)).ToList();
+
+        if (activeRequested.Count == 0)
+        {
+            // 全部正常态，无需查 Redis
+            return idList.ToDictionary(id => id, _ => (string?)"");
+        }
+
+        // Step 3: Pipeline 批量 HGET status_key (每批 1000)
+        var result = new Dictionary<string, string?>();
+        const int batchSize = 1000;
+
+        for (int i = 0; i < activeRequested.Count; i += batchSize)
+        {
+            var batch = activeRequested.Skip(i).Take(batchSize).ToList();
+            var batchObj = _db.CreateBatch();
+            var tasks = batch.Select(id =>
+                batchObj.HashGetAsync(AlarmHashPrefix + id, "status_key")).ToArray();
+            batchObj.Execute();
+
+            var results = await Task.WhenAll(tasks);
+            for (int j = 0; j < batch.Count; j++)
+                result[batch[j]] = results[j].IsNull ? "" : results[j].ToString();
+        }
+
+        // Step 4: 不在活跃集合中的监视项 → 正常态
+        foreach (var id in idList)
+        {
+            if (!result.ContainsKey(id))
+                result[id] = "";
+        }
+
+        _logger.LogInformation("Redis 状态恢复: 请求 {Requested}, 活跃 {Active}, 恢复 {Recovered}",
+            idList.Count, activeIds.Count, activeRequested.Count);
+
+        return result;
+    }
 
     public void Dispose() => _redis?.Dispose();
 }

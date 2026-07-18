@@ -34,3 +34,9 @@ ORDER BY (monitor_id, status_key, occur_time)
 TTL date + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
+-- 异步插入: 服务端自动将小 INSERT 合并为大 part，减少 merge 压力
+-- 应用层同时通过批量写入 + 定时刷新保证数据 ≤1s 延迟
+ALTER TABLE ruleengine.alarm_events MODIFY SETTING
+    min_rows_for_async_insert = 1000,
+    async_insert_busy_timeout_ms = 1000;
+

@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Threading.Channels;
 using ClickHouse.Client.ADO;
-using Luculent.Sis.RuleEngine.Shared.Enums;
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -11,7 +10,7 @@ namespace Luculent.Sis.RuleEngine.Worker.Storage;
 
 /// <summary>
 /// 基于 ClickHouse 的历史报警写入实现。
-/// 使用后台 Channel + 批量 INSERT 减少连接开销。
+/// 使用后台 Channel + 批量 INSERT + 复用连接 + 定时刷新。
 /// </summary>
 public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
 {
@@ -25,12 +24,21 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
     private long _totalDropped;
     private long _totalErrors;
 
+    // ClickHouse 最佳实践: 每批 >=1000 行，理想 10,000+。这里用 5000 平衡内存和性能。
+    private const int MaxBatchSize = 5000;
+
+    // 定时刷新: 最多 1 秒写一次，保证数据时效性
+    private static readonly TimeSpan MaxFlushInterval = TimeSpan.FromSeconds(1);
+
+    // 缓冲区容量 (生产端满时丢弃最旧事件)
+    private const int ChannelCapacity = 20000;
+
     public ClickHouseAlarmWriter(string connectionString, ILogger<ClickHouseAlarmWriter> logger)
     {
         _connectionString = connectionString;
         _logger = logger;
 
-        _channel = Channel.CreateBounded<AlarmEvent>(new BoundedChannelOptions(10000)
+        _channel = Channel.CreateBounded<AlarmEvent>(new BoundedChannelOptions(ChannelCapacity)
         {
             FullMode = BoundedChannelFullMode.DropOldest
         });
@@ -64,101 +72,167 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
         if (idList.Count == 0)
             return new Dictionary<string, string?>();
 
-        var inClause = string.Join(", ", idList.Select(id => $"'{EscapeSql(id)}'"));
-        var sql = $"""
-            SELECT monitor_id, status_key
-            FROM ruleengine.alarm_events
-            WHERE monitor_id IN ({inClause})
-            ORDER BY occur_time DESC
-            LIMIT 1 BY monitor_id
-            """;
+        var result = new Dictionary<string, string?>();
+        const int batchSize = 500;
+
+        for (int offset = 0; offset < idList.Count; offset += batchSize)
+        {
+            var batch = idList.Skip(offset).Take(batchSize).ToList();
+            var inClause = string.Join(", ", batch.Select(id => $"'{EscapeSql(id)}'"));
+            var sql = $"""
+                SELECT monitor_id, status_key
+                FROM ruleengine.alarm_events
+                WHERE monitor_id IN ({inClause})
+                ORDER BY occur_time DESC
+                LIMIT 1 BY monitor_id
+                """;
+
+            try
+            {
+                await using var conn = new ClickHouseConnection(_connectionString);
+                await conn.OpenAsync();
+
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = sql;
+
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var monitorId = reader.GetString(0);
+                    var statusKey = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    result[monitorId] = statusKey;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Worker 状态恢复 ClickHouse 批次失败: offset={Offset}, count={Count}",
+                    offset, batch.Count);
+            }
+        }
+
+        // 补全: 查询无结果的监视项 → 正常态
+        foreach (var id in idList)
+        {
+            if (!result.ContainsKey(id))
+                result[id] = "";
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 批量刷新循环: 攒够 MaxBatchSize 条 OR 距上次写入超过 MaxFlushInterval 则触发 INSERT。
+    /// 复用单条 ClickHouse 连接，异常时自动重连重试。
+    /// </summary>
+    private async Task FlushLoopAsync(CancellationToken ct)
+    {
+        var batch = new List<AlarmEvent>(MaxBatchSize);
+        var lastFlush = DateTime.UtcNow;
+
+        var conn = new ClickHouseConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        // 启用服务端异步插入: 小 INSERT 由 ClickHouse 合并为大 part 后再写盘
+        // 配合定时刷新 + 大批量，双重保障降低 merge 压力
+        await EnableAsyncInsertAsync(conn, ct);
 
         try
         {
-            await using var conn = new ClickHouseConnection(_connectionString);
-            await conn.OpenAsync();
-
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = sql;
-
-            var result = new Dictionary<string, string?>();
-            await using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            while (!ct.IsCancellationRequested)
             {
-                var monitorId = reader.GetString(0);
-                var statusKey = reader.IsDBNull(1) ? null : reader.GetString(1);
-                result[monitorId] = statusKey;
+                try
+                {
+                    // 计算剩余等待时间: 距离下次定时刷新还剩多少 ms
+                    var remainingMs = Math.Max(1,
+                        (int)(MaxFlushInterval - (DateTime.UtcNow - lastFlush)).TotalMilliseconds);
+
+                    // 等待首个事件到达 OR 定时刷新时间到
+                    using var timeoutCts = new CancellationTokenSource(remainingMs);
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+                    try
+                    {
+                        await _channel.Reader.WaitToReadAsync(linkedCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // 定时器到期: 刷新缓冲区中已有的数据
+                    }
+
+                    // 尽可能多地收集事件 (上限 MaxBatchSize)
+                    while (batch.Count < MaxBatchSize && _channel.Reader.TryRead(out var item))
+                        batch.Add(item);
+
+                    // 触发条件: batch 满 OR 定时器到期且有数据
+                    var sinceLast = DateTime.UtcNow - lastFlush;
+                    if (batch.Count >= MaxBatchSize || (batch.Count > 0 && sinceLast >= MaxFlushInterval))
+                    {
+                        var sw = Stopwatch.StartNew();
+                        await WriteBatchAsync(conn, batch, ct);
+                        sw.Stop();
+
+                        var written = Interlocked.Add(ref _totalWritten, batch.Count);
+                        _logger.LogDebug("ClickHouse 写入: {Count} 条, 耗时 {ElapsedMs}ms, 累计 {TotalWritten}",
+                            batch.Count, sw.ElapsedMilliseconds, written);
+                        batch.Clear();
+                        lastFlush = DateTime.UtcNow;
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    var errors = Interlocked.Increment(ref _totalErrors);
+                    _logger.LogError(ex, "ClickHouse 写入失败 #{ErrorCount}: {Count} 条, 尝试重连重试",
+                        errors, batch.Count);
+
+                    // 重连
+                    try { await conn.DisposeAsync(); } catch { /* ignore */ }
+                    try
+                    {
+                        conn = new ClickHouseConnection(_connectionString);
+                        await conn.OpenAsync(CancellationToken.None);
+                        await EnableAsyncInsertAsync(conn, CancellationToken.None);
+
+                        if (batch.Count > 0)
+                        {
+                            await WriteBatchAsync(conn, batch, CancellationToken.None);
+                            Interlocked.Add(ref _totalWritten, batch.Count);
+                        }
+                    }
+                    catch (Exception retryEx)
+                    {
+                        _logger.LogError(retryEx, "重连重试失败: {Count} 条事件丢失", batch.Count);
+                    }
+
+                    batch.Clear();
+                    lastFlush = DateTime.UtcNow;
+                }
             }
 
-            return result;
+            // 退出前最终刷新
+            if (batch.Count > 0)
+            {
+                try
+                {
+                    await WriteBatchAsync(conn, batch, CancellationToken.None);
+                    Interlocked.Add(ref _totalWritten, batch.Count);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "ClickHouse 退出刷新失败: {Count} 条", batch.Count);
+                }
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            _logger.LogError(ex, "Worker 启动恢复查询 ClickHouse 失败: {Count} 个 monitor", idList.Count);
-            return new Dictionary<string, string?>();
+            await conn.DisposeAsync();
         }
     }
 
-    private async Task FlushLoopAsync(CancellationToken ct)
+    private static async Task WriteBatchAsync(ClickHouseConnection conn, List<AlarmEvent> events, CancellationToken ct)
     {
-        var batch = new List<AlarmEvent>(500);
-
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                await _channel.Reader.WaitToReadAsync(ct);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-
-            // 收集一批数据
-            while (batch.Count < 500 && _channel.Reader.TryRead(out var item))
-                batch.Add(item);
-
-            if (batch.Count == 0) continue;
-
-            try
-            {
-                var sw = Stopwatch.StartNew();
-                await WriteBatchAsync(batch, ct);
-                sw.Stop();
-
-                var written = Interlocked.Add(ref _totalWritten, batch.Count);
-                _logger.LogDebug("ClickHouse 批量写入: {Count} 条, 耗时 {ElapsedMs}ms, 累计 {TotalWritten} 条",
-                    batch.Count, sw.ElapsedMilliseconds, written);
-            }
-            catch (Exception ex)
-            {
-                var errors = Interlocked.Increment(ref _totalErrors);
-                _logger.LogError(ex, "ClickHouse 批量写入失败 #{ErrorCount}: {Count} 条事件丢失, 错误: {Message}",
-                    errors, batch.Count, ex.Message);
-            }
-
-            batch.Clear();
-        }
-
-        // 退出前刷新残留数据
-        if (batch.Count > 0)
-        {
-            try
-            {
-                await WriteBatchAsync(batch, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "ClickHouse 退出刷新失败: {Count} 条", batch.Count);
-            }
-        }
-    }
-
-    private async Task WriteBatchAsync(List<AlarmEvent> events, CancellationToken ct)
-    {
-        await using var conn = new ClickHouseConnection(_connectionString);
-        await conn.OpenAsync(ct);
-
         var values = string.Join(",\n", events.Select(FormatRow));
         var sql = $"""
             INSERT INTO ruleengine.alarm_events
@@ -177,7 +251,6 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
 
     private static string FormatRow(AlarmEvent e)
     {
-        // 事件流模型: 每条状态变更追加一条记录，无 UPDATE 操作
         var threshold = e.ThresholdValue.HasValue
             ? e.ThresholdValue.Value.ToString(CultureInfo.InvariantCulture)
             : "NULL";
@@ -196,6 +269,20 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
                $"0, '{e.ConfigVersion:yyyy-MM-dd HH:mm:ss.fff}', " +
                $"'{EscapeSql(e.WorkerId)}', 0, " +
                $"{lastEventId}, {lastEventName}, {unit}, {jobId})";
+    }
+
+    private static async Task EnableAsyncInsertAsync(ClickHouseConnection conn, CancellationToken ct)
+    {
+        try
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SET async_insert = 1; SET wait_for_async_insert = 1;";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch
+        {
+            // 低版本 ClickHouse 可能不支持，忽略即可
+        }
     }
 
     private static string EscapeSql(string value) => value.Replace("\\", "\\\\").Replace("'", "\\'");

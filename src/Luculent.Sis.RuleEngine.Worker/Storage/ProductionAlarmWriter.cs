@@ -56,9 +56,28 @@ public class ProductionAlarmWriter : IAlarmWriter, IAsyncDisposable
         return _realtime.GetAlarmAsync(monitorId);
     }
 
-    public Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
+    public async Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
     {
-        return _history.GetLastEventStatusesAsync(monitorIds);
+        // 主路径: Redis (活跃报警状态已在内存/Redis 中)
+        try
+        {
+            return await _realtime.GetLastEventStatusesAsync(monitorIds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "从 Redis 恢复状态失败，回退到 ClickHouse");
+        }
+
+        // 回退: ClickHouse (Redis 不可用时)
+        try
+        {
+            return await _history.GetLastEventStatusesAsync(monitorIds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "从 ClickHouse 恢复状态也失败，返回空状态");
+            return monitorIds.ToDictionary(id => id, _ => (string?)"");
+        }
     }
 
     public async ValueTask DisposeAsync()
