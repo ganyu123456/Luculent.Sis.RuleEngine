@@ -28,6 +28,9 @@ public class WorkerCalculationService : BackgroundService
     /// </summary>
     public string WorkerId { get; set; } = Environment.MachineName;
 
+    private volatile bool _stateRecovered;
+    private long _lastStateRecoveryTimeMs;
+
     public WorkerCalculationService(
         ITrendDataReader trendReader,
         IStateStore stateStore,
@@ -98,6 +101,36 @@ public class WorkerCalculationService : BackgroundService
         var monitorIds = dueMonitors.Select(m => m.Id).ToList();
         var preloadedStates = await _stateStore.GetBatchAsync(monitorIds);
 
+        // Worker 状态恢复：对 StateStore 中缺失的 monitor 从 ClickHouse 查询最后事件恢复 PreviousStatus。
+        // 启动后首次恢复延迟 2 秒，之后每 30 秒重新检查一次（处理 Master 重分区导致的 monitor 变更）。
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var shouldRecover = !_stateRecovered
+            || (_stateRecovered && nowMs - _lastStateRecoveryTimeMs > 30_000);
+        if (shouldRecover)
+        {
+            var missingIds = monitorIds.Where(id => !preloadedStates.ContainsKey(id)).ToList();
+            if (missingIds.Count > 0)
+            {
+                var recovered = await _alarmWriter.GetLastEventStatusesAsync(missingIds);
+                foreach (var (id, statusKey) in recovered)
+                {
+                    preloadedStates[id] = new CalculationState
+                    {
+                        MonitorId = id,
+                        PreviousStatus = statusKey ?? "",
+                    };
+                }
+
+                if (recovered.Count > 0 && !_stateRecovered)
+                    _logger.LogInformation("Worker 启动恢复: 从 ClickHouse 恢复了 {Count} 个 monitor 的状态", recovered.Count);
+                else if (recovered.Count > 0)
+                    _logger.LogInformation("Worker 状态恢复: 恢复了 {Count} 个新分配 monitor 的状态", recovered.Count);
+            }
+
+            _stateRecovered = true;
+            _lastStateRecoveryTimeMs = nowMs;
+        }
+
         var modifiedStates = new ConcurrentDictionary<string, CalculationState>();
 
         await Parallel.ForEachAsync(dueMonitors,
@@ -163,6 +196,11 @@ public class WorkerCalculationService : BackgroundService
                         ?? new CalculationState { MonitorId = monitor.Id };
                     if (!string.IsNullOrEmpty(preruleState.PreviousStatus))
                     {
+                        var lastEventId = preruleState.PreviousEventId;
+                        var lastEventName = string.IsNullOrEmpty(preruleState.PreviousStatus)
+                            ? null : preruleState.PreviousStatus;
+                        var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
+
                         await _alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
                         {
                             MonitorId = monitor.Id,
@@ -172,8 +210,12 @@ public class WorkerCalculationService : BackgroundService
                             OccurTime = now,
                             ConfigVersion = monitor.LastModificationTime,
                             WorkerId = WorkerId,
+                            LastEventId = lastEventId,
+                            LastEventName = lastEventName,
                         });
 
+                        preruleState.PreviousEventOccurTimeMs = nowMs;
+                        preruleState.PreviousEventId = $"{monitor.Id}_{nowMs}_trigger";
                         preruleState.PreviousStatus = "";
                         modifiedStates[monitor.Id] = preruleState;
                     }
@@ -232,6 +274,10 @@ public class WorkerCalculationService : BackgroundService
             // 状态变更流: newStatus != PreviousStatus → 写入事件
             if (newStatus != state.PreviousStatus)
             {
+                var lastEventId = state.PreviousEventId;
+                var lastEventName = string.IsNullOrEmpty(state.PreviousStatus)
+                    ? null : state.PreviousStatus;
+
                 await _alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
                 {
                     MonitorId = monitor.Id,
@@ -244,8 +290,13 @@ public class WorkerCalculationService : BackgroundService
                     WorkerId = WorkerId,
                     Unit = unit,
                     JobId = $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
+                    LastEventId = lastEventId,
+                    LastEventName = lastEventName,
                 });
 
+                var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
+                state.PreviousEventOccurTimeMs = nowMs;
+                state.PreviousEventId = $"{monitor.Id}_{nowMs}_trigger";
                 state.PreviousStatus = newStatus;
                 modifiedStates[monitor.Id] = state;
             }

@@ -92,6 +92,7 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
         {
             state.LastSatisfiedTimeMs = 0;
             state.AccumulatedDurationSec = 0;
+            state.PreviousStatus = "";
             return false;
         }
 

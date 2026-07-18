@@ -8,6 +8,7 @@ public class AlarmQueryRequest
     public DateTime? EndTime { get; set; }
     public List<string>? StatusKeys { get; set; }
     public List<string>? EventTypes { get; set; }
+    public bool ContainNull { get; set; }
     public int SkipCount { get; set; }
     public int MaxResultCount { get; set; } = 100;
 }

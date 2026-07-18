@@ -58,6 +58,47 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
     public Task<AlarmSnapshot?> GetAlarmAsync(string monitorId)
         => Task.FromResult<AlarmSnapshot?>(null);
 
+    public async Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
+    {
+        var idList = monitorIds.ToList();
+        if (idList.Count == 0)
+            return new Dictionary<string, string?>();
+
+        var inClause = string.Join(", ", idList.Select(id => $"'{EscapeSql(id)}'"));
+        var sql = $"""
+            SELECT monitor_id, status_key
+            FROM ruleengine.alarm_events
+            WHERE monitor_id IN ({inClause})
+            ORDER BY occur_time DESC
+            LIMIT 1 BY monitor_id
+            """;
+
+        try
+        {
+            await using var conn = new ClickHouseConnection(_connectionString);
+            await conn.OpenAsync();
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+
+            var result = new Dictionary<string, string?>();
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var monitorId = reader.GetString(0);
+                var statusKey = reader.IsDBNull(1) ? null : reader.GetString(1);
+                result[monitorId] = statusKey;
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Worker 启动恢复查询 ClickHouse 失败: {Count} 个 monitor", idList.Count);
+            return new Dictionary<string, string?>();
+        }
+    }
+
     private async Task FlushLoopAsync(CancellationToken ct)
     {
         var batch = new List<AlarmEvent>(500);

@@ -97,5 +97,8 @@ public class RedisAlarmWriter : IAlarmWriter, IDisposable
         return JsonSerializer.Deserialize<AlarmSnapshot>(json.ToString());
     }
 
+    public Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
+        => Task.FromResult(new Dictionary<string, string?>());
+
     public void Dispose() => _redis?.Dispose();
 }

@@ -357,6 +357,57 @@ app.MapGet("/api/ruleengine/health", (ConfigurationService config, WorkerManager
     });
 });
 
+// ===== 后台死 Worker 检测与清理 + 自动重分区 =====
+_ = Task.Run(async () =>
+{
+    var logger = app.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("DeadWorkerCleanup");
+    var workerManager = app.Services.GetRequiredService<WorkerManager>();
+    var config = app.Services.GetRequiredService<ConfigurationService>();
+    var partition = app.Services.GetRequiredService<PartitionService>();
+    var timeout = TimeSpan.FromSeconds(30);
+
+    while (true)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(15));
+        try
+        {
+            var deadWorkers = workerManager.GetDeadWorkers(timeout);
+            if (deadWorkers.Count > 0)
+            {
+                foreach (var dead in deadWorkers)
+                {
+                    logger.LogWarning("Worker 心跳超时，标记离线: {WorkerId} (最后心跳: {LastHeartbeat})",
+                        dead.WorkerId, dead.LastHeartbeat);
+                    await workerManager.DeregisterAsync(dead.WorkerId);
+                }
+
+                // 重新分区：将已死 Worker 的监视项分配给活跃 Worker
+                if (config.Count > 0)
+                {
+                    var activeWorkers = workerManager.GetActiveWorkers();
+                    if (activeWorkers.Count > 0)
+                    {
+                        var allMonitors = config.All.Values.ToList();
+                        var result = partition.Partition(allMonitors, activeWorkers);
+                        config.SetWorkerAssignments(result.WorkerAssignments);
+
+                        foreach (var (wid, monitors) in result.WorkerAssignments)
+                            await workerManager.HeartbeatAsync(wid, monitors.Count);
+
+                        logger.LogInformation("死 Worker 清理后重分区: {ActiveWorkers} Worker, {MonitorCount} 监视项",
+                            activeWorkers.Count, allMonitors.Count);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "死 Worker 检测循环异常");
+        }
+    }
+});
+
 app.UseStaticFiles();
 
 // ===== Dashboard =====

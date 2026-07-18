@@ -53,6 +53,9 @@ public class InMemoryAlarmWriter : IAlarmWriter
         return Task.FromResult(alarm);
     }
 
+    public Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
+        => Task.FromResult(new Dictionary<string, string?>());
+
     public IReadOnlyList<AlarmEvent> GetAllHistory() => _history.ToList();
 
     public void Clear()

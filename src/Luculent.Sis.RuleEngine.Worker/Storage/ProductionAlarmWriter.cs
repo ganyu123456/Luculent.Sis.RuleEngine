@@ -56,6 +56,11 @@ public class ProductionAlarmWriter : IAlarmWriter, IAsyncDisposable
         return _realtime.GetAlarmAsync(monitorId);
     }
 
+    public Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
+    {
+        return _history.GetLastEventStatusesAsync(monitorIds);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_history is IAsyncDisposable hd) await hd.DisposeAsync();

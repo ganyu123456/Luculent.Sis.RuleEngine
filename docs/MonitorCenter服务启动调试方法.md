@@ -318,11 +318,43 @@ docker logs sis-service --tail 100 | grep -i "分布式\|distributed"
 
 ### 认证 Token
 
+SIS 有两种认证方式:
+
+#### 方式一: TokenList 白名单 Token (简单)
+
 SIS 使用 `TokenListFilterMiddleware` 接受特定格式的 Token:
 ```bash
 # 正确的 Header 格式 (无 "Bearer" 前缀)
 Authorization: ss-a5f8bd482c3e422c86026dcae470f817
 ```
+
+#### 方式二: JWT Bearer Token (标准 ABP 认证流程)
+
+当 TokenList Token 过期或不可用时，使用 ABP 标准 JWT 认证:
+
+```bash
+# Step 1: 获取 XSRF Cookie
+curl -s -c /tmp/cookies.txt -o /dev/null http://127.0.0.1:11080/
+
+# Step 2: 提取 XSRF Token
+XSRF=$(grep XSRF-TOKEN /tmp/cookies.txt | awk '{print $NF}')
+
+# Step 3: 调用 TokenAuth 获取 JWT (携带 XSRF Cookie)
+JWT=$(curl -s -b /tmp/cookies.txt \
+    -H "Content-Type: application/json" \
+    -H "RequestVerificationToken: $XSRF" \
+    -d '{"userKey":"admin","tenantKey":"Self","authenticateFrom":"Self","language":"zh-Hans","platform":null}' \
+    http://127.0.0.1:11080/api/services/app/TokenAuth/Authenticate \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['result']['accessToken'])")
+
+# Step 4: 使用 JWT Bearer Token 调用 API
+curl -s -X POST "http://127.0.0.1:11080/api/services/monitorcenter/EvnetData/GetAllForList" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $JWT" \
+    -d '{"Filter":"","MonitorItemIds":[],"ContainNull":true,"SkipCount":0,"MaxResultCount":10}'
+```
+
+> **注意**: 尝试过的 XSRF header 格式: `RequestVerificationToken`, `X-XSRF-TOKEN`, 不带 header — 都失败。只有完整 auth flow (XSRF cookie + TokenAuth Authenticate + JWT Bearer) 有效。
 
 ### ForceUseAdmin
 

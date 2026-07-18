@@ -118,19 +118,43 @@ if (!string.IsNullOrEmpty(masterApiUrl))
             calcService.AssignedMonitors[m.Id] = m;
         logger.LogInformation("Worker {WorkerId} 从 Master 拉取配置完成: {Count} 个监视项", workerId, monitors.Count);
 
-        // 启动心跳上报（含监视项数量）
+        // 启动心跳上报 + 定期配置刷新
         _ = Task.Run(async () =>
         {
+            var refreshCycle = 0;
             while (true)
             {
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(15));
                     await configClient.HeartbeatAsync(workerId, calcService.AssignedMonitors.Count);
+
+                    // 每 4 次心跳（60s）刷新一次配置，以感知 Master 重分区
+                    refreshCycle++;
+                    if (refreshCycle % 4 == 0)
+                    {
+                        var refreshed = await configClient.FetchFullConfigAsync(workerId);
+                        if (refreshed.Count > 0)
+                        {
+                            var currentIds = new HashSet<string>(calcService.AssignedMonitors.Keys);
+                            var newIds = new HashSet<string>(refreshed.Select(m => m.Id));
+                            var added = refreshed.Where(m => !currentIds.Contains(m.Id)).ToList();
+                            var removed = currentIds.Where(id => !newIds.Contains(id)).ToList();
+
+                            foreach (var m in refreshed)
+                                calcService.AssignedMonitors[m.Id] = m;
+                            foreach (var id in removed)
+                                calcService.AssignedMonitors.TryRemove(id, out _);
+
+                            if (added.Count > 0 || removed.Count > 0)
+                                logger.LogInformation("Worker {WorkerId} 配置刷新: +{Added} -{Removed} 监视项, 当前 {Count}",
+                                    workerId, added.Count, removed.Count, calcService.AssignedMonitors.Count);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Worker {WorkerId} 心跳失败", workerId);
+                    logger.LogWarning(ex, "Worker {WorkerId} 心跳/配置刷新失败", workerId);
                 }
             }
         });
