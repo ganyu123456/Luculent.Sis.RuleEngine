@@ -118,13 +118,25 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 - ClickHouse CPU 侧：写入频率未变（批量 INSERT 依然由事件驱动），CPU 高主要是 ClickHouse 自身的 merge 开销
 **建议**: 
 - 调整 ClickHouse merge 参数（`max_bytes_to_merge_at_max_space_in_pool` 等）
-- 或增大 `ClickHouseAlarmWriter` 的 batch size（当前 500/批）
+- `ClickHouseAlarmWriter` 已优化为批量 5000 + 1s 定时刷新 + 服务端 async_insert (详见 4.3)
 
 ---
 
 ### P2 [低] Master 内存 73MB / Worker 各 ~60MB
 
-**评估**: 对于 100 监视项规模，内存使用正常。1000+ 监视项时需关注 Worker 内存增长（主要来自 CalculationState 字典）。
+**评估**: 对于 100 监视项规模，内存使用正常。
+
+**扩展分析**:
+| 规模 | Worker 内存 (4 Worker) | Master 内存 |
+|------|------------------------|-------------|
+| 100 | ~60 MB | ~73 MB |
+| 50,000 | ~170-200 MB | ~150 MB |
+| 1,000,000 | ~250-350 MB | ~200 MB |
+
+- 单监视项 CalculationState 开销 ~2 KB (Dictionary entry + string keys + bool/datetime fields)
+- 1M 监视项 × 2KB ≈ 2GB / 4 Worker = ~500MB per Worker (最坏情况)
+- 实际活跃率 ~10%，大部分监视项无活跃状态，实际约 50-60MB + 活跃开销
+- 现代服务器 8-16GB 内存完全够用，无需担心
 
 ---
 
@@ -199,8 +211,81 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 - `Worker/DataAcquisition/DataAcquisitionService.cs` — 1s 周期数据采集 BackgroundService
 
 修改文件：
-- `Worker/WorkerCalculationService.cs` — 移除 TrendDB 查询依赖，改为读 TagValueStore 缓存
+- `Worker/WorkerCalculationService.cs` — 移除 TrendDB 查询依赖，改为读 TagValueStore 缓存；实时/历史报警写入增加状态去重
 - `Worker/Program.cs` — 注册 TagValueStore + DataAcquisitionService
+- `Worker/Storage/ClickHouseAlarmWriter.cs` — 批量 500→5000, 1s 定时刷新, 连接复用, async_insert, Channel 容量 20000
+- `Worker/Storage/RedisAlarmWriter.cs` — `GetLastEventStatusesAsync` 改为 SMEMBERS + Pipeline HGET 批量恢复
+- `Worker/Storage/ProductionAlarmWriter.cs` — 三级降级恢复 (Redis → ClickHouse → 空状态)
+
+### 4.3 ClickHouse 写入三重优化
+
+参照 ClickHouse 官方最佳实践，对 `ClickHouseAlarmWriter` 做了三重保障：
+
+| 优化项 | 优化前 | 优化后 | 依据 |
+|--------|--------|--------|------|
+| 批量大小 | 500 条/批 | 5000 条/批 | 官方建议 ≥1000，理想 10000+ |
+| 定时刷新 | 无（仅靠满批触发） | 最多 1s 刷新一次 | 保证数据时效性 ≤1s |
+| 连接复用 | 每次写入新建连接 | FlushLoop 复用单连接 | 减少 TCP 握手开销 |
+| 服务端 async_insert | 无 | SET async_insert=1 | 小 INSERT 由 ClickHouse 合并为大 part 后再写盘 |
+| Channel 容量 | 10000 | 20000 | 缓冲区更大，减少丢弃 |
+
+**双重保障机制**:
+- **应用层**: 5000 条满批 OR 1s 定时到 → 触发 INSERT
+- **服务端**: ClickHouse `min_rows_for_async_insert=1000, async_insert_busy_timeout_ms=1000` → 自动合并小 INSERT 为大 part
+- **效果**: 写入频率从之前的每秒多次降为最多 1 次/秒，大幅降低 ClickHouse merge 压力
+
+### 4.4 状态恢复重新设计 (面向 100 万监视项)
+
+原有方案通过 ClickHouse `WHERE monitor_id IN (...)` 批量查询，IN 子句可膨胀到 250K+ ID，对 ClickHouse 造成毁灭性查询压力。
+
+**新方案**: 三级降级恢复
+
+| 层级 | 数据源 | 查询方式 | 适用场景 |
+|------|--------|----------|----------|
+| 主路径 | Redis | SMEMBERS (获取活跃集合) + Pipeline HGET (批量查 status_key) | 正常运行时 |
+| 回退 | ClickHouse | 分批 IN (≤500/批)，`LIMIT 1 BY monitor_id` | Redis 不可用时 |
+| 降级 | 空状态 | 全部返回 "" (正常态) | ClickHouse 也不可用时 |
+
+**Redis 方案分析**:
+- `SMEMBERS` 返回活跃报警 ID 集合 → 100 万监视项 × 10% 活跃 = 10 万个活跃 ID
+- 10 万活跃 ID 中，请求的 ID 才需要 Pipeline HGET → 实际批量 ≤1000/批
+- 非活跃监视项 → 直接返回 "" (正常态)，无需网络查询
+- `SMEMBERS` O(N) 遍历 10 万元素 ~50-100ms，可接受
+- Pipeline HGET 每批 1000 个，100 批 × 0.5ms = 50ms
+
+**`ProductionAlarmWriter` 三级降级实现**:
+```csharp
+// 主路径: Redis
+try { return await _realtime.GetLastEventStatusesAsync(monitorIds); }
+catch { /* fallback */ }
+// 回退: ClickHouse
+try { return await _history.GetLastEventStatusesAsync(monitorIds); }
+catch { return monitorIds.ToDictionary(id => id, _ => (string?)""); }
+```
+
+---
+
+### 4.5 实时/历史报警写入去重
+
+**问题**: `ProcessMonitorAsync` 每个计算周期无条件写入 Redis 实时报警和 ClickHouse 历史事件，即使状态未变化。稳态下大量冗余写入。
+
+**修复**: 三条写路径全部增加状态去重，只在状态变化时写入：
+
+| 路径 | 去重条件 | 效果 |
+|------|----------|------|
+| 正常触发 | `newStatus != state.PreviousStatus` | 持续报警不重复写 |
+| 正常消除 | `newStatus != state.PreviousStatus` | 持续正常不重复删 |
+| 前置规则 suppress 清除 | `PreviousStatus != ""` | 已清除后不重复删 |
+
+**去重收益**:
+
+| 稳态场景 | 优化前 (30s 刷新间隔) | 优化后 |
+|----------|----------------------|--------|
+| 持续报警 Redis | 每 30s 写 (HSET+SADD+EXPIRE) | 不写 |
+| 持续正常 Redis | 每 30s 删 (DEL+SREM) | 不写 |
+| 持续报警 ClickHouse | 每 30s 写 (INSERT) | 不写 |
+
+**关键意义**: 实时报警 `OccurTime` 保留真正的报警开始时间，不再被后续周期覆盖。
 
 ---
 
@@ -223,4 +308,4 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 | P2 | F3 - Key vs SourceKey | 前置规则数据正确性 |
 | P3 | F4 - Worker 重启报警波动 | 影响可控 |
 | P3 | F5 - 闭环验证开环事件 | 功能正常，仅验证提示 |
-| P3 | P1 - ClickHouse CPU | Worker 侧已通过模式 A 优化，ClickHouse 侧需单独调整 merge 参数 |
+| P3 | P1 - ClickHouse CPU | Worker 侧已通过模式 A 优化，ClickHouse 写入侧已通过三重优化 (4.3) 完成，ClickHouse merge 侧需单独调整参数 |

@@ -230,12 +230,12 @@ public class WorkerCalculationService : BackgroundService
             {
                 if (preruleResult.ShouldClearAlarm)
                 {
-                    await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
-
                     var preruleState = preloadedState
                         ?? new CalculationState { MonitorId = monitor.Id };
                     if (!string.IsNullOrEmpty(preruleState.PreviousStatus))
                     {
+                        await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
+
                         var lastEventId = preruleState.PreviousEventId;
                         var lastEventName = string.IsNullOrEmpty(preruleState.PreviousStatus)
                             ? null : preruleState.PreviousStatus;
@@ -276,44 +276,44 @@ public class WorkerCalculationService : BackgroundService
                 .FirstOrDefault(s => s.Key == monitor.FocusSourceId)?.Unit
                 ?? monitor.MonitorSources.FirstOrDefault()?.Unit;
 
-            // 实时报警更新
-            if (result.HasEvent)
-            {
-                var alarmStates = new List<string>();
-                if (!string.IsNullOrEmpty(result.State))
-                    alarmStates.Add(result.State);
-                if (result.States.Count > 0)
-                    alarmStates.AddRange(result.States);
-                if (result.StatesDic.Count > 0)
-                    alarmStates.AddRange(result.StatesDic.Keys);
-
-                foreach (var stateKey in alarmStates)
-                {
-                    if (string.IsNullOrEmpty(stateKey) || stateKey == "PACKAGECOMPLETEEVENT")
-                        continue;
-
-                    await _alarmWriter.WriteRealtimeAlarmAsync(new AlarmSnapshot
-                    {
-                        MonitorId = monitor.Id,
-                        MonitorKey = monitor.Key,
-                        MonitorName = monitor.Name,
-                        StatusKey = stateKey,
-                        StatusName = stateKey,
-                        Value = result.TriggerValue ?? 0,
-                        OccurTime = now,
-                        ConfigVersion = monitor.LastModificationTime,
-                        WorkerId = WorkerId,
-                    });
-                }
-            }
-            else
-            {
-                await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
-            }
-
-            // ③ 状态变更 → 写入事件
+            // ③ 状态变更 → 写入实时报警 + 历史事件
+            // 实时报警只在状态变化时写入，保留报警开始时间
             if (newStatus != state.PreviousStatus)
             {
+                if (result.HasEvent)
+                {
+                    var alarmStates = new List<string>();
+                    if (!string.IsNullOrEmpty(result.State))
+                        alarmStates.Add(result.State);
+                    if (result.States.Count > 0)
+                        alarmStates.AddRange(result.States);
+                    if (result.StatesDic.Count > 0)
+                        alarmStates.AddRange(result.StatesDic.Keys);
+
+                    foreach (var stateKey in alarmStates)
+                    {
+                        if (string.IsNullOrEmpty(stateKey) || stateKey == "PACKAGECOMPLETEEVENT")
+                            continue;
+
+                        await _alarmWriter.WriteRealtimeAlarmAsync(new AlarmSnapshot
+                        {
+                            MonitorId = monitor.Id,
+                            MonitorKey = monitor.Key,
+                            MonitorName = monitor.Name,
+                            StatusKey = stateKey,
+                            StatusName = stateKey,
+                            Value = result.TriggerValue ?? 0,
+                            OccurTime = now,
+                            ConfigVersion = monitor.LastModificationTime,
+                            WorkerId = WorkerId,
+                        });
+                    }
+                }
+                else
+                {
+                    await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
+                }
+
                 var lastEventId = state.PreviousEventId;
                 var lastEventName = string.IsNullOrEmpty(state.PreviousStatus)
                     ? null : state.PreviousStatus;
