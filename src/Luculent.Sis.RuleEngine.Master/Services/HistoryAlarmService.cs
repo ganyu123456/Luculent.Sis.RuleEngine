@@ -23,25 +23,34 @@ public class HistoryAlarmService
     }
 
     /// <summary>
-    /// 分页查询历史报警事件，支持多条件过滤。
+    /// 分页查询历史报警事件（事件流模型: LEAD 窗口函数配对区间）。
     /// </summary>
     public async Task<AlarmQueryResponse> QueryAsync(AlarmQueryRequest request)
     {
         var sw = Stopwatch.StartNew();
         var where = BuildWhere(request, out var parameters);
 
-        var countSql = $"SELECT count() FROM ruleengine.alarm_events WHERE {where}";
+        // 事件流模型: LEAD 计算 end_time，过滤掉空状态事件（作为区间末端被消费）
+        var countSql = $"SELECT count() FROM ruleengine.alarm_events WHERE {where} AND status_key != ''";
         var dataSql = $"""
             SELECT monitor_id, monitor_key, monitor_name, status_key, status_name,
-                   event_type, occur_time, clear_time, trigger_value, worker_id,
+                   start_time, end_time, trigger_value, worker_id,
                    last_event_id, last_event_name, unit, job_id
-            FROM ruleengine.alarm_events
-            WHERE {where}
-            ORDER BY occur_time DESC
+            FROM (
+                SELECT monitor_id, monitor_key, monitor_name, status_key, status_name,
+                       occur_time AS start_time,
+                       LEAD(occur_time) OVER (PARTITION BY monitor_id ORDER BY occur_time) AS end_time,
+                       trigger_value, worker_id,
+                       last_event_id, last_event_name, unit, job_id
+                FROM ruleengine.alarm_events
+                WHERE {where}
+            )
+            WHERE status_key != ''
+            ORDER BY start_time DESC
             LIMIT {request.MaxResultCount} OFFSET {request.SkipCount}
             """;
 
-        _logger.LogDebug("ClickHouse 查询历史: WHERE={Where}, LIMIT={Limit}", where, request.MaxResultCount);
+        _logger.LogDebug("ClickHouse 查询历史(事件流): WHERE={Where}, LIMIT={Limit}", where, request.MaxResultCount);
 
         await using var conn = new ClickHouseConnection(_connectionString);
         await conn.OpenAsync();
@@ -67,21 +76,21 @@ public class HistoryAlarmService
                     MonitorName = reader.GetString(2),
                     StatusKey = reader.GetString(3),
                     StatusName = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    EventType = reader.GetString(5),
-                    OccurTime = reader.GetDateTime(6),
-                    ClearTime = reader.IsDBNull(7) ? null : reader.GetDateTime(7),
-                    TriggerValue = reader.GetDouble(8),
-                    WorkerId = reader.GetString(9),
-                    LastEventId = reader.IsDBNull(10) ? null : reader.GetString(10),
-                    LastEventName = reader.IsDBNull(11) ? null : reader.GetString(11),
-                    Unit = reader.IsDBNull(12) ? null : reader.GetString(12),
-                    JobId = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    EventType = "trigger",   // 事件流模型: 所有返回行均为有效状态事件
+                    OccurTime = reader.GetDateTime(5),  // start_time
+                    ClearTime = reader.IsDBNull(6) ? null : reader.GetDateTime(6),  // end_time from LEAD
+                    TriggerValue = reader.GetDouble(7),
+                    WorkerId = reader.GetString(8),
+                    LastEventId = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    LastEventName = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    Unit = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    JobId = reader.IsDBNull(12) ? null : reader.GetString(12),
                 });
             }
         }
 
         sw.Stop();
-        _logger.LogInformation("ClickHouse 历史查询完成: Total={TotalCount}, Returned={Count}, 耗时 {ElapsedMs}ms",
+        _logger.LogInformation("ClickHouse 历史查询完成(事件流): Total={TotalCount}, Returned={Count}, 耗时 {ElapsedMs}ms",
             totalCount, items.Count, sw.ElapsedMilliseconds);
 
         return new AlarmQueryResponse { Items = items, TotalCount = totalCount };
@@ -100,32 +109,37 @@ public class HistoryAlarmService
     }
 
     /// <summary>
-    /// 闭环节点验证：查找指定时间范围内有触发但无对应消除的报警事件。
-    /// 对标 MonitorCenter 的闭环事件校验逻辑。
+    /// 闭环节点验证（事件流模型）: 查找指定时间范围内无后续 "恢复正常" 事件的报警。
     /// </summary>
     public async Task<ClosedLoopValidationResult> ValidateClosedLoopAsync(DateTime startTime, DateTime endTime)
     {
         var sw = Stopwatch.StartNew();
+        // 事件流模型: 使用 LEAD 查找每个状态事件的下一个事件
+        // 未关闭 = 最后一条事件的状态非空（没有后续的 status_key='' 事件）
         var sql = $"""
             SELECT
                 monitor_id,
                 monitor_key,
                 monitor_name,
                 status_key,
-                countIf(event_type = 'trigger') AS trigger_count,
-                countIf(event_type = 'clear') AS clear_count,
-                minIf(occur_time, event_type = 'trigger') AS first_trigger,
-                maxIf(occur_time, event_type = 'clear') AS last_clear
-            FROM ruleengine.alarm_events
-            WHERE occur_time >= '{startTime:yyyy-MM-dd HH:mm:ss}'
-              AND occur_time <= '{endTime:yyyy-MM-dd HH:mm:ss}'
+                max(start_time) AS last_trigger,
+                max(next_status) AS next_status
+            FROM (
+                SELECT monitor_id, monitor_key, monitor_name, status_key,
+                       occur_time AS start_time,
+                       LEAD(status_key) OVER (PARTITION BY monitor_id ORDER BY occur_time) AS next_status
+                FROM ruleengine.alarm_events
+                WHERE occur_time >= '{startTime:yyyy-MM-dd HH:mm:ss}'
+                  AND occur_time <= '{endTime:yyyy-MM-dd HH:mm:ss}'
+            )
+            WHERE status_key != ''
             GROUP BY monitor_id, monitor_key, monitor_name, status_key
-            HAVING trigger_count > clear_count
-            ORDER BY trigger_count DESC
+            HAVING next_status IS NULL OR next_status != ''
+            ORDER BY last_trigger DESC
             LIMIT 500
             """;
 
-        _logger.LogDebug("闭环验证查询: {StartTime} ~ {EndTime}", startTime, endTime);
+        _logger.LogDebug("闭环验证查询(事件流): {StartTime} ~ {EndTime}", startTime, endTime);
 
         await using var conn = new ClickHouseConnection(_connectionString);
         await conn.OpenAsync();
@@ -137,17 +151,17 @@ public class HistoryAlarmService
             await using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                var clearCount = Convert.ToInt64(reader.GetValue(5));
+                var hasNextStatus = !reader.IsDBNull(4) && reader.GetString(4) != "";
                 openEvents.Add(new OpenAlarmInfo
                 {
                     MonitorId = reader.GetString(0),
                     MonitorKey = reader.GetString(1),
                     MonitorName = reader.GetString(2),
                     StatusKey = reader.GetString(3),
-                    TriggerCount = Convert.ToInt64(reader.GetValue(4)),
-                    ClearCount = clearCount,
-                    FirstTrigger = reader.GetDateTime(6),
-                    LastClear = clearCount > 0 && !reader.IsDBNull(7) ? reader.GetDateTime(7) : null,
+                    TriggerCount = hasNextStatus ? 1 : 1,
+                    ClearCount = hasNextStatus ? 0 : 1,
+                    FirstTrigger = reader.GetDateTime(4),
+                    LastClear = null,
                 });
             }
         }
@@ -155,12 +169,12 @@ public class HistoryAlarmService
         // 总览统计
         var statsSql = $"""
             SELECT
-                countIf(event_type = 'trigger') AS total_triggers,
-                countIf(event_type = 'clear') AS total_clears,
-                uniq(monitor_id) AS affected_monitors
+                uniqExact(monitor_id) AS affected_monitors,
+                countIf(event_type = 'trigger') AS total_events
             FROM ruleengine.alarm_events
             WHERE occur_time >= '{startTime:yyyy-MM-dd HH:mm:ss}'
               AND occur_time <= '{endTime:yyyy-MM-dd HH:mm:ss}'
+              AND status_key != ''
             """;
 
         using (var cmd = conn.CreateCommand())
@@ -170,16 +184,18 @@ public class HistoryAlarmService
             if (await reader.ReadAsync())
             {
                 sw.Stop();
+                var affectedMonitors = Convert.ToInt64(reader.GetValue(0));
+                var totalEvents = Convert.ToInt64(reader.GetValue(1));
                 var result = new ClosedLoopValidationResult
                 {
-                    TotalTriggers = Convert.ToInt64(reader.GetValue(0)),
-                    TotalClears = Convert.ToInt64(reader.GetValue(1)),
-                    AffectedMonitors = Convert.ToInt64(reader.GetValue(2)),
+                    TotalTriggers = totalEvents,
+                    TotalClears = totalEvents - openEvents.Count,
+                    AffectedMonitors = affectedMonitors,
                     OpenEvents = openEvents,
-                    IsClosedLoop = Convert.ToInt64(reader.GetValue(0)) == Convert.ToInt64(reader.GetValue(1)),
+                    IsClosedLoop = openEvents.Count == 0,
                 };
-                _logger.LogInformation("闭环验证完成: 触发 {Triggers}, 消除 {Clears}, 未关闭 {OpenCount}, 耗时 {ElapsedMs}ms",
-                    result.TotalTriggers, result.TotalClears, result.OpenEvents.Count, sw.ElapsedMilliseconds);
+                _logger.LogInformation("闭环验证完成(事件流): 状态事件 {TotalEvents}, 未关闭 {OpenCount}, 耗时 {ElapsedMs}ms",
+                    result.TotalTriggers, result.OpenEvents.Count, sw.ElapsedMilliseconds);
                 return result;
             }
         }
@@ -217,12 +233,8 @@ public class HistoryAlarmService
             conditions.Add($"status_key IN ({keys})");
         }
 
-        if (request.EventTypes?.Count > 0)
-        {
-            var types = string.Join(", ", request.EventTypes.Select(t => $"'{EscapeSql(t)}'"));
-            conditions.Add($"event_type IN ({types})");
-        }
-
+        // 事件流模型: 不再按 event_type 过滤，所有有效事件均为状态变更记录
+        // status_key != '' 在查询外层过滤
         return conditions.Count > 0 ? string.Join(" AND ", conditions) : "1=1";
     }
 

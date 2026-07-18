@@ -54,4 +54,10 @@ public class InMemoryAlarmWriter : IAlarmWriter
     }
 
     public IReadOnlyList<AlarmEvent> GetAllHistory() => _history.ToList();
+
+    public void Clear()
+    {
+        _history.Clear();
+        _activeAlarms.Clear();
+    }
 }

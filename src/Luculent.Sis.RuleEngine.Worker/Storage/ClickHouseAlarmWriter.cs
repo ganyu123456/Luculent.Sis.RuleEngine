@@ -132,58 +132,14 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         await cmd.ExecuteNonQueryAsync(ct);
-
-        // 对 clear 事件，精确匹配对应 trigger 事件的 occur_time 并更新 clear_time
-        foreach (var e in events)
-        {
-            if (e.EventType != EventType.Clear) continue;
-
-            try
-            {
-                using var updateCmd = conn.CreateCommand();
-                // 若 clear 事件携带了关联的 trigger occur_time，则精确匹配；否则回退到宽范围匹配
-                if (e.RelatedTriggerOccurTime.HasValue)
-                {
-                    updateCmd.CommandText = $"""
-                        ALTER TABLE ruleengine.alarm_events
-                        UPDATE clear_time = '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}'
-                        WHERE monitor_id = '{EscapeSql(e.MonitorId)}'
-                          AND status_key = '{EscapeSql(e.StatusKey)}'
-                          AND event_type = 'trigger'
-                          AND clear_time IS NULL
-                          AND occur_time = '{e.RelatedTriggerOccurTime.Value:yyyy-MM-dd HH:mm:ss.fff}'
-                        SETTINGS mutations_sync = 1
-                        """;
-                }
-                else
-                {
-                    updateCmd.CommandText = $"""
-                        ALTER TABLE ruleengine.alarm_events
-                        UPDATE clear_time = '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}'
-                        WHERE monitor_id = '{EscapeSql(e.MonitorId)}'
-                          AND status_key = '{EscapeSql(e.StatusKey)}'
-                          AND event_type = 'trigger'
-                          AND clear_time IS NULL
-                          AND occur_time >= '{e.OccurTime.AddHours(-1):yyyy-MM-dd HH:mm:ss.fff}'
-                        SETTINGS mutations_sync = 1
-                        """;
-                }
-                await updateCmd.ExecuteNonQueryAsync(ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "更新 trigger clear_time 失败: {MonitorId}/{StatusKey}",
-                    e.MonitorId, e.StatusKey);
-            }
-        }
     }
 
     private static string FormatRow(AlarmEvent e)
     {
-        var eventType = e.EventType == EventType.Trigger ? "'trigger'" : "'clear'";
-        var clearTime = e.ClearTime.HasValue
-            ? $"'{e.ClearTime.Value:yyyy-MM-dd HH:mm:ss.fff}'"
-            : "NULL";
+        // 事件流模型: 所有事件统一使用 event_type='trigger', clear_time=NULL
+        // LEAD 窗口函数在查询侧配对区间，无需写入时区分 trigger/clear
+        var eventType = "'trigger'";
+        var clearTime = "NULL";
         var threshold = e.ThresholdValue.HasValue
             ? e.ThresholdValue.Value.ToString(CultureInfo.InvariantCulture)
             : "NULL";
