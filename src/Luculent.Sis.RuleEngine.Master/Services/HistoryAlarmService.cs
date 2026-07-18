@@ -23,8 +23,8 @@ public class HistoryAlarmService
     }
 
     /// <summary>
-    /// 分页查询历史报警事件（事件流模型: C# 层配对相邻事件计算 end_time）。
-    /// ClickHouse 24.10 不支持 LEAD 窗口函数，改为应用层计算区间结束时间。
+    /// 分页查询历史报警事件（事件流模型: 纯状态变更追加写，无 UPDATE）。
+    /// 事件配对及时长计算由 MonitorCenter 负责。
     /// </summary>
     public async Task<AlarmQueryResponse> QueryAsync(AlarmQueryRequest request)
     {
@@ -84,19 +84,6 @@ public class HistoryAlarmService
                     JobId = reader.IsDBNull(11) ? null : reader.GetString(11),
                 });
             }
-        }
-
-        // 事件流配对: 对每个 monitor 的事件按时间升序排列，相邻配对计算 ClearTime
-        // ClearTime 不是事件流原生概念，此处为 MonitorCenter 兼容性计算
-        var eventsByMonitor = rawEvents
-            .GroupBy(e => e.MonitorId)
-            .ToDictionary(g => g.Key, g => g.OrderBy(e => e.OccurTime).ToList());
-
-        foreach (var (_, events) in eventsByMonitor)
-        {
-            for (int i = 0; i < events.Count - 1; i++)
-                events[i].ClearTime = events[i + 1].OccurTime;
-            // 最后一个事件无下一个事件配对，ClearTime 保持 null（表示事件仍在持续）
         }
 
         // 展开、按 OccurTime 降序排列、containNull 过滤、分页

@@ -26,7 +26,6 @@ public class AlarmEventDTO
     public string StatusKey { get; set; } = string.Empty;
     public string? StatusName { get; set; }
     public DateTime OccurTime { get; set; }
-    public DateTime? ClearTime { get; set; }
     public double TriggerValue { get; set; }
     public string WorkerId { get; set; } = string.Empty;
     public string? LastEventId { get; set; }

@@ -7,6 +7,16 @@
 
 ---
 
+## 架构说明
+
+Rule Engine 采用**纯事件流模型**：
+- 每条记录 = 一次状态变更（触发或消除），全部 INSERT，无 UPDATE
+- `StatusKey` 区分事件类型：非空 = 触发，空字符串 = 消除
+- 事件配对/持续时长计算/StatusKey→StatusName 映射均由 MonitorCenter 侧完成
+- Rule Engine 只负责：规则计算 → 写事件 → 提供原始事件流查询
+
+---
+
 ## 一、功能缺陷
 
 ### F1 [严重] RangeDuration 前置规则始终返回 false，导致 50/100 监视项被永久抑制
@@ -36,8 +46,6 @@ foreach (var rule in def.RuleRangeDurations.OrderBy(r => r.Priority))
 return anyHit;
 ```
 
-**验证方法**: 修改后重新部署，确认 ClickHouse 中出现 test0001-test0050 的事件。
-
 ---
 
 ### F2 [高] 前置规则评估无日志输出，运行状态不可观测
@@ -54,48 +62,7 @@ return anyHit;
 
 ---
 
-### ~~F3~~ (非缺陷) ClickHouse 事件流模型：event_type 列冗余
-
-经确认，`event_type` 始终为 `'trigger'` 是**有意设计**。事件流模型中每条记录即一次状态变更：
-- `StatusKey="satisfiled"` → 触发
-- `StatusKey=""` → 消除
-- `containNull=false` 过滤空状态即可只看触发事件
-- `HistoryAlarmService` 闭环验证通过 StatusKey 是否为空统计 trigger/clear 数量
-
-`event_type` 枚举列 (`Enum8('trigger'=1, 'clear'=2)`) 属于冗余 schema，实际区分逻辑在应用层完成。
-
----
-
-### F3 [低] clear_time 仅查询时 C# 侧配对计算，不在写入时存储
-
-**文件**: `Master/Services/HistoryAlarmService.cs:90-100`
-
-**根因**: ClickHouse 24.10 不支持 LEAD 窗口函数，改为 C# 层配对:
-```csharp
-events[i].ClearTime = events[i + 1].OccurTime;
-```
-最后一个事件 ClearTime 永远为 null。
-
-**影响**:
-- 持续中的报警 ClearTime 为 null（合理）
-- 但若查询时间窗口刚好截断了一对 trigger+clear，最后一个 clear 事件的 ClearTime 也会为 null（不合理）
-- 分页时配对可能不准确（只配对了查询返回的事件，不是全量）
-
-**备注**: 此方案在当前 ClickHouse 版本下可接受，升级到支持窗口函数的版本后应改为 SQL 实现。
-
----
-
-### ~~F4~~ (非缺陷) statusName 在历史查询中为空
-
-Rule Engine 只记录 `statusKey`，`statusKey → statusName` 映射属于 MonitorCenter 的业务元数据。MonitorCenter 的 `HistoryMonitorAppService` (line 275-282) 已从本地 Postgres 做查表补全，不依赖 Rule Engine 返回值。
-
-### ~~F5~~ (非缺陷) lastEventId/lastEventName 为空
-
-消除事件 (StatusKey="") 已正确填入 `lastEventId` + `lastEventName=satisfiled`，指向被消除的 trigger。触发事件的 `lastEventName=null` 是合理的——上一次事件是消除，没有有意义的名称。
-
----
-
-### F4 [低] FetchSourceDataAsync 使用 Key 而非 SourceKey 获取固定值数据源
+### F3 [低] FetchSourceDataAsync 使用 Key 而非 SourceKey 获取固定值数据源
 
 **文件**: `Worker/Calculation/PreruleEvaluationService.cs:79-80`
 
@@ -111,11 +78,19 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 
 ---
 
-### F5 [低] Worker 重启时活跃报警数波动
+### F4 [低] Worker 重启时活跃报警数波动
 
 **观察**: Worker-2 停止后，活跃报警从 50 → 27；重启后逐渐恢复。
 **根因**: Worker 重启后状态缓存丢失，原有触发条件需重新累积 duration 才能再次触发。
 **影响**: 短暂的报警丢失（1-2 个计算周期）。
+
+---
+
+### F5 [低] 闭环验证检测出开环事件
+
+**观察**: 75 次触发 vs 25 次消除，`isClosedLoop: false`。
+**根因**: 闭环验证 `HistoryAlarmService.ValidateClosedLoopAsync` 通过 `monitorLastStatus` 判断：最后一条 `StatusKey` 非空即视为开环。生产环境中消除事件会逐步增多。
+**影响**: 功能正常，仅验证结果显示有开环事件。
 
 ---
 
@@ -165,16 +140,36 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 - Admin API `/load-prerules` 正确拒绝空列表
 
 ### E4 [通过] 检索条件过滤
-- `eventTypes: ["trigger"]` 正确过滤（75 条结果）
-- `monitorKeys: ["test00510261"]` 正确过滤（2 条结果）
+- `monitorKeys: ["test00510261"]` 正确过滤 (2 条结果)
+- `containNull=true/false` 过滤正确 (3241 vs 3074 totalCount)
+- `StatusKey` 过滤正确区分触发/消除事件
 
-### E5 [注意] 闭环验证显示 50 个监视项存在开环事件
-- 75 次触发 vs 25 次消除，但 `isClosedLoop: false`
-- 原因: 消除事件 (StatusKey="") 在生产中会逐步增加，但当前所有事件只有 25 条空状态
+### E5 [通过] 事件流写入验证
+- ClickHouse 有持续新增事件 (INSERT only, 无 UPDATE)
+- StatusKey="" 消除事件正常产生 (92+)
+- 事件配对由 MonitorCenter 侧 `HistoryMonitorAppService.GetAllForListFromRuleEngineAsync` 完成
 
 ---
 
-## 四、单元测试状态
+## 四、已完成的架构清理 (2026-07-18)
+
+以下旧方案残留已全部清理，Rule Engine 为纯事件流模型：
+
+| 清理项 | 说明 |
+|--------|------|
+| `EventType` 枚举 | 已删除 `Shared/Enums/EventType.cs`。StatusKey 已能区分触发/消除 |
+| `event_type` 列 | 从 INSERT、AlarmEvent、AlarmEventDTO 全部移除 |
+| `clear_time` 列 | 从 INSERT、AlarmEvent 全部移除。事件流无 UPDATE 操作 |
+| `ClearTime` DTO 字段 | 从 `AlarmEventDTO` 移除 |
+| `clearTime` MonitorCenter 字段 | 从 `RuleEngineClient.HistoryAlarmItem` 移除 |
+| 事件配对逻辑 | 从 `HistoryAlarmService` (Rule Engine) 移至 `HistoryMonitorAppService` (MonitorCenter) |
+| `EventTypes` 过滤参数 | 从 API、DTO、RuleEngineClient 全部移除 |
+| `AlarmSnapshot.ToAlarmEvent()` | 已删除（死代码） |
+| `CalculationState.PreviousEventOccurTime` | 已删除 |
+
+---
+
+## 五、单元测试状态
 
 - 现有测试: 53 个全部通过 (WorkerCalculationService_Tests: 7 个)
 - 缺失测试:
@@ -184,13 +179,13 @@ var keys = sources.Select(s => string.IsNullOrEmpty(s.Key) ? s.SourceKey : s.Key
 
 ---
 
-## 修复优先级
+## 六、修复优先级
 
 | 优先级 | 缺陷 | 原因 |
 |--------|------|------|
 | P0 | F1 - RangeDuration BreakOnHit | 阻塞 50% 监视项，数据面 |
 | P1 | F2 - 前置规则评估日志 | 无法调试，阻塞后续问题排查 |
-| P2 | F4 - Key vs SourceKey | 前置规则数据正确性 |
-| P3 | F3 - clear_time 查询计算 | 当前方案可工作 |
-| P3 | F5 - Worker 重启报警波动 | 影响可控 |
+| P2 | F3 - Key vs SourceKey | 前置规则数据正确性 |
+| P3 | F4 - Worker 重启报警波动 | 影响可控 |
+| P3 | F5 - 闭环验证开环事件 | 功能正常，仅验证提示 |
 | P3 | P1 - ClickHouse CPU | 性能优化 |
