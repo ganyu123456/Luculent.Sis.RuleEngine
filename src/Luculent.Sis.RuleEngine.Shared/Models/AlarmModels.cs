@@ -44,4 +44,12 @@ public class AlarmEvent
     public double? ThresholdValue { get; set; }
     public DateTime ConfigVersion { get; set; }
     public string WorkerId { get; set; } = string.Empty;
+
+    public string? LastEventId { get; set; }
+    public string? LastEventName { get; set; }
+    public string? Unit { get; set; }
+    public string? JobId { get; set; }
+
+    /// <summary>关联的 trigger 事件发生时间，用于精确匹配 clear_time UPDATE</summary>
+    public DateTime? RelatedTriggerOccurTime { get; set; }
 }

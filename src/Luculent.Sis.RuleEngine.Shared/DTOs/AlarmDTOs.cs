@@ -3,6 +3,7 @@ namespace Luculent.Sis.RuleEngine.Shared.DTOs;
 public class AlarmQueryRequest
 {
     public List<string> MonitorIds { get; set; } = new();
+    public List<string>? MonitorKeys { get; set; }
     public DateTime? StartTime { get; set; }
     public DateTime? EndTime { get; set; }
     public List<string>? StatusKeys { get; set; }
@@ -29,6 +30,10 @@ public class AlarmEventDTO
     public DateTime? ClearTime { get; set; }
     public double TriggerValue { get; set; }
     public string WorkerId { get; set; } = string.Empty;
+    public string? LastEventId { get; set; }
+    public string? LastEventName { get; set; }
+    public string? Unit { get; set; }
+    public string? JobId { get; set; }
 }
 
 public class RealtimeAlarmResponse

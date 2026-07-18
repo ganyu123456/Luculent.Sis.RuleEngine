@@ -123,7 +123,8 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
             INSERT INTO ruleengine.alarm_events
             (monitor_id, monitor_key, monitor_name, status_key, status_name,
              event_type, occur_time, clear_time, trigger_value, threshold_value,
-             rule_type, config_version, worker_id, shard_id)
+             rule_type, config_version, worker_id, shard_id,
+             last_event_id, last_event_name, unit, job_id)
             VALUES
             {values}
             """;
@@ -132,7 +133,7 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
         cmd.CommandText = sql;
         await cmd.ExecuteNonQueryAsync(ct);
 
-        // 对 clear 事件，同步更新对应 trigger 事件的 clear_time
+        // 对 clear 事件，精确匹配对应 trigger 事件的 occur_time 并更新 clear_time
         foreach (var e in events)
         {
             if (e.EventType != EventType.Clear) continue;
@@ -140,16 +141,33 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
             try
             {
                 using var updateCmd = conn.CreateCommand();
-                updateCmd.CommandText = $"""
-                    ALTER TABLE ruleengine.alarm_events
-                    UPDATE clear_time = '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}'
-                    WHERE monitor_id = '{EscapeSql(e.MonitorId)}'
-                      AND status_key = '{EscapeSql(e.StatusKey)}'
-                      AND event_type = 'trigger'
-                      AND clear_time IS NULL
-                      AND occur_time >= '{e.OccurTime.AddHours(-1):yyyy-MM-dd HH:mm:ss.fff}'
-                    SETTINGS mutations_sync = 1
-                    """;
+                // 若 clear 事件携带了关联的 trigger occur_time，则精确匹配；否则回退到宽范围匹配
+                if (e.RelatedTriggerOccurTime.HasValue)
+                {
+                    updateCmd.CommandText = $"""
+                        ALTER TABLE ruleengine.alarm_events
+                        UPDATE clear_time = '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}'
+                        WHERE monitor_id = '{EscapeSql(e.MonitorId)}'
+                          AND status_key = '{EscapeSql(e.StatusKey)}'
+                          AND event_type = 'trigger'
+                          AND clear_time IS NULL
+                          AND occur_time = '{e.RelatedTriggerOccurTime.Value:yyyy-MM-dd HH:mm:ss.fff}'
+                        SETTINGS mutations_sync = 1
+                        """;
+                }
+                else
+                {
+                    updateCmd.CommandText = $"""
+                        ALTER TABLE ruleengine.alarm_events
+                        UPDATE clear_time = '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}'
+                        WHERE monitor_id = '{EscapeSql(e.MonitorId)}'
+                          AND status_key = '{EscapeSql(e.StatusKey)}'
+                          AND event_type = 'trigger'
+                          AND clear_time IS NULL
+                          AND occur_time >= '{e.OccurTime.AddHours(-1):yyyy-MM-dd HH:mm:ss.fff}'
+                        SETTINGS mutations_sync = 1
+                        """;
+                }
                 await updateCmd.ExecuteNonQueryAsync(ct);
             }
             catch (Exception ex)
@@ -172,13 +190,18 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
         var statusName = e.StatusName != null
             ? $"'{EscapeSql(e.StatusName)}'"
             : "NULL";
+        var lastEventId = e.LastEventId != null ? $"'{EscapeSql(e.LastEventId)}'" : "NULL";
+        var lastEventName = e.LastEventName != null ? $"'{EscapeSql(e.LastEventName)}'" : "NULL";
+        var unit = e.Unit != null ? $"'{EscapeSql(e.Unit)}'" : "NULL";
+        var jobId = e.JobId != null ? $"'{EscapeSql(e.JobId)}'" : "NULL";
 
         return $"('{EscapeSql(e.MonitorId)}', '{EscapeSql(e.MonitorKey)}', '{EscapeSql(e.MonitorName)}', " +
                $"'{EscapeSql(e.StatusKey)}', {statusName}, " +
                $"{eventType}, '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}', {clearTime}, " +
                $"{e.TriggerValue.ToString(CultureInfo.InvariantCulture)}, {threshold}, " +
                $"0, '{e.ConfigVersion:yyyy-MM-dd HH:mm:ss.fff}', " +
-               $"'{EscapeSql(e.WorkerId)}', 0)";
+               $"'{EscapeSql(e.WorkerId)}', 0, " +
+               $"{lastEventId}, {lastEventName}, {unit}, {jobId})";
     }
 
     private static string EscapeSql(string value) => value.Replace("\\", "\\\\").Replace("'", "\\'");

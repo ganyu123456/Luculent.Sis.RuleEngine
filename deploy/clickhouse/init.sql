@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS ruleengine.alarm_events (
     worker_id         String COMMENT '产生此事件的 Worker ID',
     shard_id          UInt8 COMMENT '分片 ID',
 
+    last_event_id     Nullable(String) COMMENT '上一次事件 ID',
+    last_event_name   Nullable(String) COMMENT '上一次事件状态名称',
+    unit              Nullable(String) COMMENT '单位',
+    job_id            Nullable(String) COMMENT '任务 ID',
+
     date              Date MATERIALIZED toDate(occur_time)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(occur_time)

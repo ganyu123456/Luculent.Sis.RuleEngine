@@ -9,7 +9,7 @@ namespace Luculent.Sis.RuleEngine.Worker.Calculation;
 /// 根据 RuleType 将监控项分发到对应的计算器。
 /// 对标 MonitorCenter 的 RuleManager.Calculate switch 逻辑。
 /// </summary>
-public class RuleDispatcher
+public class RuleDispatcher : IRuleDispatcher
 {
     private readonly CalculateRuleExpression _expressionCalc;
     private readonly CalculateRuleRangeDuration _rangeDurationCalc;

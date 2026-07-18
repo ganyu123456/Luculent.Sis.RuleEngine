@@ -39,8 +39,9 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
             return RuleCalculateResult.Empty();
         }
 
-        // 确保 state 始终存在，从 CheckDurationHit 内部提到外部避免丢失
-        var state = await _stateStore.GetAsync(monitor.Id)
+        // 使用独立 state key 避免与 ProcessMonitorAsync(alarm state) 冲突
+        var stateKey = $"{monitor.Id}:rdur";
+        var state = await _stateStore.GetAsync(stateKey)
                     ?? new CalculationState
                     {
                         MonitorId = monitor.Id,
@@ -80,7 +81,7 @@ public class CalculateRuleRangeDuration : RuleCalculatorBase
             }
         }
 
-        await _stateStore.SaveAsync(monitor.Id, state);
+        await _stateStore.SaveAsync(stateKey, state);
         return result;
     }
 

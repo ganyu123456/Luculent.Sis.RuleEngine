@@ -108,7 +108,7 @@ services:
     # ===== 横向扩展配置 =====
     deploy:
       # 默认 3 副本（生产环境建议 3-10）
-      replicas: 3
+      replicas: 2
       resources:
         limits:
           cpus: "2"

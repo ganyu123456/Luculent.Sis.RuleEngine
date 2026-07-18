@@ -8,7 +8,7 @@ namespace Luculent.Sis.RuleEngine.Worker.Calculation;
 /// 前置规则检查管道。对标 MonitorCenter 的 PrerulePipeline + MonitorItemPipeline.PreruleCheck。
 /// 在规则计算前执行抑制条件检查：手动停止、关联启停监视项、数据源依赖。
 /// </summary>
-public class PrerulePipeline
+public class PrerulePipeline : IPrerulePipeline
 {
     private readonly IAlarmWriter _alarmWriter;
     private readonly ILogger<PrerulePipeline> _logger;

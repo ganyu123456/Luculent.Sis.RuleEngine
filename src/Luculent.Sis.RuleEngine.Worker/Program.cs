@@ -70,9 +70,11 @@ if (!string.IsNullOrEmpty(masterApiUrl))
 
 // ===== 前置规则检查管道 =====
 builder.Services.AddSingleton<PrerulePipeline>();
+builder.Services.AddSingleton<IPrerulePipeline>(sp => sp.GetRequiredService<PrerulePipeline>());
 
 // ===== 规则分发器 =====
 builder.Services.AddSingleton<RuleDispatcher>();
+builder.Services.AddSingleton<IRuleDispatcher>(sp => sp.GetRequiredService<RuleDispatcher>());
 
 // ===== 主计算服务 =====
 builder.Services.AddSingleton<WorkerCalculationService>();

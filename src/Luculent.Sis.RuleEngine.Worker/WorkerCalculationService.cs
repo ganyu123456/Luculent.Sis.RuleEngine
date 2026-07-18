@@ -14,8 +14,8 @@ public class WorkerCalculationService : BackgroundService
     private readonly ITrendDataReader _trendReader;
     private readonly IStateStore _stateStore;
     private readonly IAlarmWriter _alarmWriter;
-    private readonly RuleDispatcher _dispatcher;
-    private readonly PrerulePipeline _prerule;
+    private readonly IRuleDispatcher _dispatcher;
+    private readonly IPrerulePipeline _prerule;
     private readonly ILogger<WorkerCalculationService> _logger;
 
     /// <summary>
@@ -32,8 +32,8 @@ public class WorkerCalculationService : BackgroundService
         ITrendDataReader trendReader,
         IStateStore stateStore,
         IAlarmWriter alarmWriter,
-        RuleDispatcher dispatcher,
-        PrerulePipeline prerule,
+        IRuleDispatcher dispatcher,
+        IPrerulePipeline prerule,
         ILogger<WorkerCalculationService> logger)
     {
         _trendReader = trendReader;
@@ -156,8 +156,14 @@ public class WorkerCalculationService : BackgroundService
                             OccurTime = now,
                             ClearTime = now,
                             WorkerId = WorkerId,
+                            RelatedTriggerOccurTime = preruleState.PreviousEventOccurTime,
                         };
                         await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
+
+                        // 重置状态，避免后续周期产生重复 clear 事件
+                        preruleState.PreviousStatus = null;
+                        preruleState.PreviousEventOccurTime = null;
+                        await _stateStore.SaveAsync(monitor.Id, preruleState);
                     }
                 }
 
@@ -190,6 +196,11 @@ public class WorkerCalculationService : BackgroundService
                 bool isNewAlarm = validStates.Count > 0
                     && (existingAlarm == null || !validStates.Contains(existingAlarm.StatusKey));
 
+                // 获取 Unit（从 MonitorSources 中取 FocusSource 或第一个数据源的单位）
+                var unit = monitor.MonitorSources
+                    .FirstOrDefault(s => s.Key == monitor.FocusSourceId)?.Unit
+                    ?? monitor.MonitorSources.FirstOrDefault()?.Unit;
+
                 foreach (var stateKey in alarmStates)
                 {
                     if (string.IsNullOrEmpty(stateKey) || stateKey == "PACKAGECOMPLETEEVENT")
@@ -215,19 +226,28 @@ public class WorkerCalculationService : BackgroundService
                 if (isNewAlarm)
                 {
                     var firstState = validStates[0];
-                    var historyAlarm = new AlarmSnapshot
+                    var historyEvent = new AlarmEvent
                     {
                         MonitorId = monitor.Id,
                         MonitorKey = monitor.Key,
                         MonitorName = monitor.Name,
                         StatusKey = firstState,
                         StatusName = firstState,
-                        Value = result.TriggerValue ?? 0,
+                        EventType = Shared.Enums.EventType.Trigger,
                         OccurTime = now,
+                        TriggerValue = result.TriggerValue ?? 0,
                         ConfigVersion = monitor.LastModificationTime,
                         WorkerId = WorkerId,
+                        Unit = unit,
+                        JobId = $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
                     };
-                    await _alarmWriter.WriteHistoryAlarmAsync(historyAlarm.ToAlarmEvent());
+                    await _alarmWriter.WriteHistoryAlarmAsync(historyEvent);
+
+                    // 保存 trigger 时间到状态，用于后续 clear 精确匹配
+                    state ??= new CalculationState { MonitorId = monitor.Id };
+                    state.PreviousStatus = firstState;
+                    state.PreviousEventOccurTime = now;
+                    await _stateStore.SaveAsync(monitor.Id, state);
                 }
             }
             else if (state?.PreviousStatus != null)
@@ -243,9 +263,15 @@ public class WorkerCalculationService : BackgroundService
                     OccurTime = now,
                     ClearTime = now,
                     WorkerId = WorkerId,
+                    RelatedTriggerOccurTime = state.PreviousEventOccurTime,
                 };
                 await _alarmWriter.WriteHistoryAlarmAsync(clearEvent);
                 await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
+
+                // 重置状态，避免后续周期产生重复 clear 事件
+                state.PreviousStatus = null;
+                state.PreviousEventOccurTime = null;
+                await _stateStore.SaveAsync(monitor.Id, state);
             }
 
             monitor.LastCalculateTime = now;

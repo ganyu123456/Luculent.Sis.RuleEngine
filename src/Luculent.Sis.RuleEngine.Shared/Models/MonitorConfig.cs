@@ -58,4 +58,5 @@ public class MonitorSourceDefinition
     public string Key { get; set; } = string.Empty;
     public int SourceType { get; set; }
     public string RelatedId { get; set; } = string.Empty;
+    public string Unit { get; set; } = string.Empty;
 }

@@ -33,7 +33,8 @@ public class HistoryAlarmService
         var countSql = $"SELECT count() FROM ruleengine.alarm_events WHERE {where}";
         var dataSql = $"""
             SELECT monitor_id, monitor_key, monitor_name, status_key, status_name,
-                   event_type, occur_time, clear_time, trigger_value, worker_id
+                   event_type, occur_time, clear_time, trigger_value, worker_id,
+                   last_event_id, last_event_name, unit, job_id
             FROM ruleengine.alarm_events
             WHERE {where}
             ORDER BY occur_time DESC
@@ -71,6 +72,10 @@ public class HistoryAlarmService
                     ClearTime = reader.IsDBNull(7) ? null : reader.GetDateTime(7),
                     TriggerValue = reader.GetDouble(8),
                     WorkerId = reader.GetString(9),
+                    LastEventId = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    LastEventName = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    Unit = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    JobId = reader.IsDBNull(13) ? null : reader.GetString(13),
                 });
             }
         }
@@ -192,6 +197,12 @@ public class HistoryAlarmService
         {
             var ids = string.Join(", ", request.MonitorIds.Select(id => $"'{EscapeSql(id)}'"));
             conditions.Add($"monitor_id IN ({ids})");
+        }
+
+        if (request.MonitorKeys?.Count > 0)
+        {
+            var keys = string.Join(", ", request.MonitorKeys.Select(k => $"'{EscapeSql(k)}'"));
+            conditions.Add($"monitor_key IN ({keys})");
         }
 
         if (request.StartTime.HasValue)
