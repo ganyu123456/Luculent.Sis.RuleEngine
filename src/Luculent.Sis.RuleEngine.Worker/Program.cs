@@ -56,7 +56,10 @@ builder.Services.AddSingleton<CalculatePackageValue>();
 builder.Services.AddSingleton<CalculateWallTemperature>();
 builder.Services.AddSingleton<CalculateInterfaceMonitoring>();
 
-// ===== 前置规则检查管道 =====
+// ===== 前置规则 =====
+builder.Services.AddSingleton<PreruleStateStore>();
+builder.Services.AddSingleton<PreruleDefinitionStore>();
+builder.Services.AddSingleton<PreruleEvaluationService>();
 builder.Services.AddSingleton<PrerulePipeline>();
 builder.Services.AddSingleton<IPrerulePipeline>(sp => sp.GetRequiredService<PrerulePipeline>());
 

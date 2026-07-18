@@ -3,6 +3,7 @@ using System.Text.Json;
 using Grpc.Core;
 using Luculent.Sis.RuleEngine.Shared.Grpc;
 using Luculent.Sis.RuleEngine.Shared.Models;
+using Luculent.Sis.RuleEngine.Worker.Storage;
 
 namespace Luculent.Sis.RuleEngine.Master.Services;
 
@@ -16,6 +17,7 @@ public class GrpcConnectionService : RuleEngineService.RuleEngineServiceBase
     private readonly WorkerManager _workerManager;
     private readonly ConfigurationService _configService;
     private readonly PartitionService _partitionService;
+    private readonly PreruleDefinitionStore _preruleStore;
     private readonly ILogger<GrpcConnectionService> _logger;
 
     /// <summary>活跃的 Worker 连接 (workerId → stream writer)</summary>
@@ -30,11 +32,13 @@ public class GrpcConnectionService : RuleEngineService.RuleEngineServiceBase
         WorkerManager workerManager,
         ConfigurationService configService,
         PartitionService partitionService,
+        PreruleDefinitionStore preruleStore,
         ILogger<GrpcConnectionService> logger)
     {
         _workerManager = workerManager;
         _configService = configService;
         _partitionService = partitionService;
+        _preruleStore = preruleStore;
         _logger = logger;
     }
 
@@ -174,15 +178,24 @@ public class GrpcConnectionService : RuleEngineService.RuleEngineServiceBase
         CancellationToken ct)
     {
         var monitors = _configService.GetByWorkerId(workerId);
-        var json = JsonSerializer.Serialize(monitors, JsonOpts);
+        var monitorsJson = JsonSerializer.Serialize(monitors, JsonOpts);
+
+        var prerules = _preruleStore.GetAll();
+        var prerulesJson = prerules.Count > 0
+            ? JsonSerializer.Serialize(prerules, JsonOpts)
+            : "";
 
         await responseStream.WriteAsync(new MasterMessage
         {
-            ConfigPush = new ConfigPush { MonitorsJson = json }
+            ConfigPush = new ConfigPush
+            {
+                MonitorsJson = monitorsJson,
+                PrerulesJson = prerulesJson,
+            }
         }, ct);
 
-        _logger.LogInformation("推送配置到 Worker {WorkerId}: {Count} 监视项",
-            workerId, monitors.Count);
+        _logger.LogInformation("推送配置到 Worker {WorkerId}: {Count} 监视项, {PreruleCount} 前置规则",
+            workerId, monitors.Count, prerules.Count);
     }
 
     private async Task RebalanceIfNeeded()

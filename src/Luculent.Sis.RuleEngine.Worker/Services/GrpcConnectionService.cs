@@ -3,6 +3,7 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using Luculent.Sis.RuleEngine.Shared.Grpc;
 using Luculent.Sis.RuleEngine.Shared.Models;
+using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace Luculent.Sis.RuleEngine.Worker.Services;
@@ -16,6 +17,7 @@ public class GrpcConnectionService : IAsyncDisposable
     private readonly string _workerId;
     private readonly string _masterUrl;
     private readonly WorkerCalculationService _calcService;
+    private readonly PreruleDefinitionStore _preruleStore;
     private readonly ILogger<GrpcConnectionService> _logger;
 
     private GrpcChannel? _channel;
@@ -30,6 +32,7 @@ public class GrpcConnectionService : IAsyncDisposable
     public GrpcConnectionService(
         IConfiguration configuration,
         WorkerCalculationService calcService,
+        PreruleDefinitionStore preruleStore,
         ILogger<GrpcConnectionService> logger)
     {
         _workerId = configuration.GetValue<string>("WORKER_ID") ?? Environment.MachineName;
@@ -37,6 +40,7 @@ public class GrpcConnectionService : IAsyncDisposable
             ?? configuration.GetValue<string>("MASTER_API_URL")
             ?? "http://master:11083";
         _calcService = calcService;
+        _preruleStore = preruleStore;
         _logger = logger;
     }
 
@@ -164,6 +168,21 @@ public class GrpcConnectionService : IAsyncDisposable
     {
         try
         {
+            // 处理前置规则定义
+            if (!string.IsNullOrEmpty(push.PrerulesJson))
+            {
+                var prerules = JsonSerializer.Deserialize<List<PreruleDefinition>>(
+                    push.PrerulesJson, JsonOpts);
+                if (prerules != null && prerules.Count > 0)
+                {
+                    _preruleStore.LoadAll(prerules);
+                    _logger.LogInformation(
+                        "Worker {WorkerId} 前置规则更新: {Count} 条",
+                        _workerId, prerules.Count);
+                }
+            }
+
+            // 处理监视项配置
             var monitors = JsonSerializer.Deserialize<List<MonitorConfig>>(
                 push.MonitorsJson, JsonOpts);
 

@@ -3,6 +3,7 @@ using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
+using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
 using Moq;
 
@@ -31,6 +32,11 @@ public class WorkerCalculationService_Tests
             _alarmWriterMock.Object,
             _dispatcherMock.Object,
             _preruleMock.Object,
+            new PreruleEvaluationService(
+                new PreruleDefinitionStore(),
+                new PreruleStateStore(),
+                Mock.Of<ITrendDataReader>(),
+                Mock.Of<ILogger<PreruleEvaluationService>>()),
             Mock.Of<ILogger<WorkerCalculationService>>())
         {
             WorkerId = "test-worker"
@@ -45,7 +51,7 @@ public class WorkerCalculationService_Tests
         RefreshIntervalSecond = 30,
         TagName = "tag1",
         RuleOptions = new MonitorRuleOptions(),
-        Prerule = new PreruleConfig { IsEnabled = true },
+        InterfaceMonitoring = new InterfaceMonitoringConfig { IsEnabled = true },
         MonitorSources = new List<MonitorSourceDefinition>
         {
             new() { Key = "src1", SourceType = 3, RelatedId = "rel-1", Unit = "%" }

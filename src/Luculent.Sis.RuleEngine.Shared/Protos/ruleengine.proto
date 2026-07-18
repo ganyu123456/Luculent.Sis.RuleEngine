@@ -33,7 +33,8 @@ message MasterMessage {
 }
 
 message ConfigPush {
-  string monitors_json = 1;  // JSON-serialized List<MonitorConfig>
+  string monitors_json = 1;   // JSON-serialized List<MonitorConfig>
+  string prerules_json = 2;   // JSON-serialized List<PreruleDefinition>
 }
 
 message ShutdownCommand {

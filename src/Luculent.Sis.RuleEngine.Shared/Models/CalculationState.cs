@@ -18,9 +18,6 @@ public class CalculationState
 
     public string? PreviousStatus { get; set; }
 
-    /// <summary>上一次 trigger 事件的发生时间，用于 clear 事件精确匹配</summary>
-    public DateTime? PreviousEventOccurTime { get; set; }
-
     /// <summary>上一次写入事件的发生时间(毫秒)，用于构造 next 事件的 lastEventId</summary>
     public long PreviousEventOccurTimeMs { get; set; }
 

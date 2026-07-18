@@ -1,6 +1,6 @@
 -- ===== SIS RuleEngine ClickHouse 初始化脚本 =====
--- 事件流模型 v2: 无 trigger/clear 区分，纯状态变更追加写
--- 区间配对由 LEAD 窗口函数在查询侧完成
+-- 事件流模型: 每条状态变更新增一条记录，不做 UPDATE
+-- 持续时间由查询侧相邻事件配对计算
 
 CREATE DATABASE IF NOT EXISTS ruleengine;
 
@@ -34,7 +34,3 @@ ORDER BY (monitor_id, status_key, occur_time)
 TTL date + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
--- ===== 历史迁移兼容列 (从 v1 trigger/clear 模型升级时保留) =====
--- 以下列在 v1 表中存在但新模型不再使用，通过 ALTER TABLE 保留以兼容旧数据:
---   event_type      Enum8('trigger' = 1, 'clear' = 2)  -- 已废弃，查询侧不再区分
---   clear_time      Nullable(DateTime64(3))              -- 已废弃，由 LEAD 窗口函数替代

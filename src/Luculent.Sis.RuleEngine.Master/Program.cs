@@ -1,6 +1,7 @@
 using Luculent.Sis.RuleEngine.Master.Services;
 using Luculent.Sis.RuleEngine.Shared.DTOs;
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
+using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
 using Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
@@ -26,7 +27,8 @@ builder.Services.AddSingleton<GrpcConnectionService>();
 builder.Services.AddSingleton<AlarmQueryService>();
 builder.Services.AddSingleton<HistoryAlarmService>();
 builder.Services.AddSingleton<DashboardService>();
-builder.Services.AddSingleton<PrerulePipeline>();
+builder.Services.AddSingleton<PreruleStateStore>();
+builder.Services.AddSingleton<PreruleDefinitionStore>();
 
 // ===== Monitor Center 集成 =====
 var monitorCenterUrl = builder.Configuration.GetValue<string>("MonitorCenter:ApiUrl");
@@ -125,6 +127,22 @@ if (!string.IsNullOrEmpty(monitorCenterUrl))
                     var grpcService = app.Services.GetRequiredService<GrpcConnectionService>();
                     await grpcService.PushToWorkersAsync(result.WorkerAssignments);
                 }
+            }
+
+            // 拉取前置规则定义
+            try
+            {
+                var prerules = await client.FetchAllPrerulesAsync();
+                if (prerules.Count > 0)
+                {
+                    var preruleStore = app.Services.GetRequiredService<PreruleDefinitionStore>();
+                    preruleStore.LoadAll(prerules);
+                    logger.LogInformation("启动加载前置规则: {Count} 条", prerules.Count);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "从 Monitor Center 拉取前置规则失败");
             }
         }
         catch (Exception ex)
@@ -355,6 +373,40 @@ workerGroup.MapPost("/{workerId}/heartbeat", async (string workerId, int? monito
 {
     await workers.HeartbeatAsync(workerId, monitorCount ?? 0);
     return Results.Ok();
+});
+
+// ===== Admin API (运维) =====
+var adminGroup = app.MapGroup("/api/ruleengine/admin");
+
+adminGroup.MapPost("/load-prerules", async (HttpRequest request,
+    PreruleDefinitionStore preruleStore,
+    GrpcConnectionService grpcService,
+    ILogger<Program> logger) =>
+{
+    try
+    {
+        using var reader = new StreamReader(request.Body);
+        var json = await reader.ReadToEndAsync();
+        var prerules = System.Text.Json.JsonSerializer.Deserialize<List<PreruleDefinition>>(json,
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        if (prerules == null || prerules.Count == 0)
+            return Results.BadRequest("空前置规则列表");
+
+        preruleStore.LoadAll(prerules);
+        logger.LogInformation("Admin: 加载 {Count} 条前置规则", prerules.Count);
+
+        // 推送配置到所有Worker
+        var assignments = preruleStore.GetAll();
+        logger.LogInformation("Admin: 推送前置规则到 Workers, {Count} 条", prerules.Count);
+
+        return Results.Ok(new { Count = prerules.Count });
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "加载前置规则失败");
+        return Results.Problem(detail: ex.ToString(), statusCode: 500);
+    }
 });
 
 // ===== 健康检查 =====

@@ -31,7 +31,13 @@ public class MonitorConfig
     public List<MonitorSourceDefinition> MonitorSources { get; set; } = new();
 
     public MonitorRuleOptions RuleOptions { get; set; } = new();
-    public PreruleConfig Prerule { get; set; } = new();
+
+    /// <summary>关联前置规则 ID（null = 无前置规则）</summary>
+    public string? PreruleId { get; set; }
+
+    /// <summary>InterfaceMonitoring 专属抑制配置</summary>
+    public InterfaceMonitoringConfig InterfaceMonitoring { get; set; } = new();
+
     public DateTime LastModificationTime { get; set; } = DateTime.UtcNow;
 
     [JsonIgnore]

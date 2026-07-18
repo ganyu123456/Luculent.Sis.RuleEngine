@@ -38,7 +38,7 @@ public class InMemoryAlarmWriter : IAlarmWriter
     public Task WriteHistoryAlarmAsync(AlarmEvent alarmEvent)
     {
         _history.Add(alarmEvent);
-        _logger.LogDebug("写入历史报警: {MonitorId} {EventType}", alarmEvent.MonitorId, alarmEvent.EventType);
+        _logger.LogDebug("写入历史报警: {MonitorId} {StatusKey}", alarmEvent.MonitorId, alarmEvent.StatusKey);
         return Task.CompletedTask;
     }
 

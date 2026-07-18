@@ -75,7 +75,6 @@ public class HistoryAlarmService
                     MonitorName = reader.GetString(2),
                     StatusKey = reader.GetString(3),
                     StatusName = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    EventType = "trigger",
                     OccurTime = reader.GetDateTime(5),
                     TriggerValue = reader.GetDouble(6),
                     WorkerId = reader.GetString(7),
@@ -87,7 +86,8 @@ public class HistoryAlarmService
             }
         }
 
-        // 事件流配对: 对每个 monitor 的事件按时间升序排列，相邻配对计算 end_time
+        // 事件流配对: 对每个 monitor 的事件按时间升序排列，相邻配对计算 ClearTime
+        // ClearTime 不是事件流原生概念，此处为 MonitorCenter 兼容性计算
         var eventsByMonitor = rawEvents
             .GroupBy(e => e.MonitorId)
             .ToDictionary(g => g.Key, g => g.OrderBy(e => e.OccurTime).ToList());
@@ -258,8 +258,6 @@ public class HistoryAlarmService
             conditions.Add($"status_key IN ({keys})");
         }
 
-        // 事件流模型: 不再按 event_type 过滤，所有有效事件均为状态变更记录
-        // status_key != '' 在查询外层过滤
         return conditions.Count > 0 ? string.Join(" AND ", conditions) : "1=1";
     }
 

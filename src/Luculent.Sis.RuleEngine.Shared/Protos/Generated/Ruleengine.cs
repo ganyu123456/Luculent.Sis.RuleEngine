@@ -44,7 +44,7 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.RegisterRequest), global::Luculent.Sis.RuleEngine.Shared.Grpc.RegisterRequest.Parser, new[]{ "WorkerId" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.Heartbeat), global::Luculent.Sis.RuleEngine.Shared.Grpc.Heartbeat.Parser, new[]{ "MonitorCount" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.MasterMessage), global::Luculent.Sis.RuleEngine.Shared.Grpc.MasterMessage.Parser, new[]{ "ConfigPush", "Shutdown" }, new[]{ "Payload" }, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush), global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush.Parser, new[]{ "MonitorsJson" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush), global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush.Parser, new[]{ "MonitorsJson", "PrerulesJson" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.ShutdownCommand), global::Luculent.Sis.RuleEngine.Shared.Grpc.ShutdownCommand.Parser, new[]{ "Reason" }, null, null, null, null)
           }));
     }
@@ -1072,6 +1072,7 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public ConfigPush(ConfigPush other) : this() {
       monitorsJson_ = other.monitorsJson_;
+      prerulesJson_ = other.prerulesJson_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -1096,6 +1097,21 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       }
     }
 
+    /// <summary>Field number for the "prerules_json" field.</summary>
+    public const int PrerulesJsonFieldNumber = 2;
+    private string prerulesJson_ = "";
+    /// <summary>
+    /// JSON-serialized List&lt;PreruleDefinition>
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string PrerulesJson {
+      get { return prerulesJson_; }
+      set {
+        prerulesJson_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -1112,6 +1128,7 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
         return true;
       }
       if (MonitorsJson != other.MonitorsJson) return false;
+      if (PrerulesJson != other.PrerulesJson) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -1120,6 +1137,7 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
     public override int GetHashCode() {
       int hash = 1;
       if (MonitorsJson.Length != 0) hash ^= MonitorsJson.GetHashCode();
+      if (PrerulesJson.Length != 0) hash ^= PrerulesJson.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -1142,6 +1160,10 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
         output.WriteRawTag(10);
         output.WriteString(MonitorsJson);
       }
+      if (PrerulesJson.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(PrerulesJson);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -1156,6 +1178,10 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
         output.WriteRawTag(10);
         output.WriteString(MonitorsJson);
       }
+      if (PrerulesJson.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(PrerulesJson);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -1168,6 +1194,9 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       int size = 0;
       if (MonitorsJson.Length != 0) {
         size += 1 + pb::CodedOutputStream.ComputeStringSize(MonitorsJson);
+      }
+      if (PrerulesJson.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(PrerulesJson);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -1183,6 +1212,9 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       }
       if (other.MonitorsJson.Length != 0) {
         MonitorsJson = other.MonitorsJson;
+      }
+      if (other.PrerulesJson.Length != 0) {
+        PrerulesJson = other.PrerulesJson;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -1207,6 +1239,10 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
             MonitorsJson = input.ReadString();
             break;
           }
+          case 18: {
+            PrerulesJson = input.ReadString();
+            break;
+          }
         }
       }
     #endif
@@ -1228,6 +1264,10 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
             break;
           case 10: {
             MonitorsJson = input.ReadString();
+            break;
+          }
+          case 18: {
+            PrerulesJson = input.ReadString();
             break;
           }
         }

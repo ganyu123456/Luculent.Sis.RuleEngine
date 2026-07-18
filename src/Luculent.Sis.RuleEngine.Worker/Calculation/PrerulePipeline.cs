@@ -1,64 +1,75 @@
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
+using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace Luculent.Sis.RuleEngine.Worker.Calculation;
 
 /// <summary>
-/// 前置规则检查管道。对标 MonitorCenter 的 PrerulePipeline + MonitorItemPipeline.PreruleCheck。
-/// 在规则计算前执行抑制条件检查：手动停止、关联启停监视项、数据源依赖。
+/// 前置规则检查管道：
+/// ① PreruleId 检查 — 读取 PreruleStateStore 缓存，不满足则抑制
+/// ② InterfaceMonitoring 抑制检查 — ManualFlag / StopMonitor / SourceDependency
 /// </summary>
 public class PrerulePipeline : IPrerulePipeline
 {
+    private readonly PreruleStateStore _preruleStateStore;
     private readonly IAlarmWriter _alarmWriter;
     private readonly ILogger<PrerulePipeline> _logger;
 
-    public PrerulePipeline(IAlarmWriter alarmWriter, ILogger<PrerulePipeline> logger)
+    public PrerulePipeline(
+        PreruleStateStore preruleStateStore,
+        IAlarmWriter alarmWriter,
+        ILogger<PrerulePipeline> logger)
     {
+        _preruleStateStore = preruleStateStore;
         _alarmWriter = alarmWriter;
         _logger = logger;
     }
 
-    /// <summary>
-    /// 对单个监视项执行所有前置规则检查。任一检查返回抑制即短路。
-    /// </summary>
     public async Task<PreruleCheckResult> CheckAsync(MonitorConfig monitor)
     {
-        var prerule = monitor.Prerule;
-        if (!prerule.IsEnabled)
+        // ① 前置规则检查（对标 MonitorCenter PreruleCheckBlock）
+        if (!string.IsNullOrEmpty(monitor.PreruleId))
+        {
+            var state = _preruleStateStore.GetState(monitor.PreruleId);
+            if (state == null)
+            {
+                // 前置规则尚未就绪，跳过本轮
+                _logger.LogTrace("Monitor {Id} prerule {PreruleId} not ready, skip", monitor.Id, monitor.PreruleId);
+                return PreruleCheckResult.Suppress("Prerule not ready", clearAlarm: false);
+            }
+
+            if (!state.Value)
+            {
+                _logger.LogTrace("Monitor {Id} suppressed by prerule {PreruleId}", monitor.Id, monitor.PreruleId);
+                return PreruleCheckResult.Suppress("不满足前置条件", clearAlarm: true);
+            }
+        }
+
+        // ② InterfaceMonitoring 抑制检查
+        var im = monitor.InterfaceMonitoring;
+        if (!im.IsEnabled)
             return PreruleCheckResult.Pass();
 
-        // ① ManualFlag 检查
-        if (prerule.EnableManualFlagCheck)
+        // ManualFlag 检查
+        if (im.EnableManualFlagCheck)
         {
             var result = CheckManualFlag(monitor);
-            if (result.ShouldSuppress)
-            {
-                _logger.LogTrace("Monitor {Id} suppressed by ManualFlag", monitor.Id);
-                return result;
-            }
+            if (result.ShouldSuppress) return result;
         }
 
-        // ② StopMonitor 关联启停检查
-        if (prerule.EnableStopMonitorCheck)
+        // StopMonitor 检查
+        if (im.EnableStopMonitorCheck)
         {
             var result = await CheckStopMonitorAsync(monitor);
-            if (result.ShouldSuppress)
-            {
-                _logger.LogTrace("Monitor {Id} suppressed by StopMonitor {Key}", monitor.Id, monitor.StopMonitorKey);
-                return result;
-            }
+            if (result.ShouldSuppress) return result;
         }
 
-        // ③ SourceDependency 数据源依赖检查
-        if (prerule.EnableSourceDependencyCheck)
+        // SourceDependency 检查
+        if (im.EnableSourceDependencyCheck)
         {
             var result = await CheckSourceDependencyAsync(monitor);
-            if (result.ShouldSuppress)
-            {
-                _logger.LogTrace("Monitor {Id} suppressed by SourceDependency", monitor.Id);
-                return result;
-            }
+            if (result.ShouldSuppress) return result;
         }
 
         return PreruleCheckResult.Pass();
@@ -68,7 +79,6 @@ public class PrerulePipeline : IPrerulePipeline
     {
         if (monitor.ManualFlag == 0)
             return PreruleCheckResult.Suppress("ManualFlag=0 (手动停止)", clearAlarm: true);
-
         return PreruleCheckResult.Pass();
     }
 
@@ -77,12 +87,10 @@ public class PrerulePipeline : IPrerulePipeline
         if (string.IsNullOrEmpty(monitor.StopMonitorKey))
             return PreruleCheckResult.Pass();
 
-        // 查找 StopMonitorKey 对应的监视项是否处于报警状态
-        // StopMonitorKey 可能是 MonitorId 或 MonitorKey
         var stopAlarm = await _alarmWriter.GetAlarmAsync(monitor.StopMonitorKey);
         if (stopAlarm != null)
             return PreruleCheckResult.Suppress(
-                $"StopMonitor '{monitor.StopMonitorKey}' is in alarm state '{stopAlarm.StatusKey}'",
+                $"StopMonitor '{monitor.StopMonitorKey}' is in alarm",
                 clearAlarm: true);
 
         return PreruleCheckResult.Pass();
@@ -101,7 +109,7 @@ public class PrerulePipeline : IPrerulePipeline
             var sourceAlarm = await _alarmWriter.GetAlarmAsync(source.RelatedId);
             if (sourceAlarm != null)
                 return PreruleCheckResult.Suppress(
-                    $"SourceDependency '{source.RelatedId}' (Key={source.Key}) is in alarm",
+                    $"SourceDependency '{source.RelatedId}' is in alarm",
                     clearAlarm: false);
         }
 

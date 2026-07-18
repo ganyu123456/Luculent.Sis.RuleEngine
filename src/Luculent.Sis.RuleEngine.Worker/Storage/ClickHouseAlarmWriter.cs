@@ -163,7 +163,7 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
         var sql = $"""
             INSERT INTO ruleengine.alarm_events
             (monitor_id, monitor_key, monitor_name, status_key, status_name,
-             event_type, occur_time, clear_time, trigger_value, threshold_value,
+             occur_time, trigger_value, threshold_value,
              rule_type, config_version, worker_id, shard_id,
              last_event_id, last_event_name, unit, job_id)
             VALUES
@@ -177,10 +177,7 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
 
     private static string FormatRow(AlarmEvent e)
     {
-        // 事件流模型: 所有事件统一使用 event_type='trigger', clear_time=NULL
-        // LEAD 窗口函数在查询侧配对区间，无需写入时区分 trigger/clear
-        var eventType = "'trigger'";
-        var clearTime = "NULL";
+        // 事件流模型: 每条状态变更追加一条记录，无 UPDATE 操作
         var threshold = e.ThresholdValue.HasValue
             ? e.ThresholdValue.Value.ToString(CultureInfo.InvariantCulture)
             : "NULL";
@@ -194,7 +191,7 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
 
         return $"('{EscapeSql(e.MonitorId)}', '{EscapeSql(e.MonitorKey)}', '{EscapeSql(e.MonitorName)}', " +
                $"'{EscapeSql(e.StatusKey)}', {statusName}, " +
-               $"{eventType}, '{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}', {clearTime}, " +
+               $"'{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}', " +
                $"{e.TriggerValue.ToString(CultureInfo.InvariantCulture)}, {threshold}, " +
                $"0, '{e.ConfigVersion:yyyy-MM-dd HH:mm:ss.fff}', " +
                $"'{EscapeSql(e.WorkerId)}', 0, " +

@@ -16,6 +16,7 @@ public class WorkerCalculationService : BackgroundService
     private readonly IAlarmWriter _alarmWriter;
     private readonly IRuleDispatcher _dispatcher;
     private readonly IPrerulePipeline _prerule;
+    private readonly PreruleEvaluationService _preruleEval;
     private readonly ILogger<WorkerCalculationService> _logger;
 
     /// <summary>
@@ -37,6 +38,7 @@ public class WorkerCalculationService : BackgroundService
         IAlarmWriter alarmWriter,
         IRuleDispatcher dispatcher,
         IPrerulePipeline prerule,
+        PreruleEvaluationService preruleEval,
         ILogger<WorkerCalculationService> logger)
     {
         _trendReader = trendReader;
@@ -44,6 +46,7 @@ public class WorkerCalculationService : BackgroundService
         _alarmWriter = alarmWriter;
         _dispatcher = dispatcher;
         _prerule = prerule;
+        _preruleEval = preruleEval;
         _logger = logger;
     }
 
@@ -154,6 +157,25 @@ public class WorkerCalculationService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         _logger.LogInformation("Worker 计算服务启动");
+
+        // 前置规则评估循环（独立运行，10s 周期）
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(3000, ct); // 等待初始配置到达
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    await _preruleEval.EvaluateAllAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "前置规则评估循环异常");
+                }
+
+                await Task.Delay(10000, ct);
+            }
+        }, ct);
 
         while (!ct.IsCancellationRequested)
         {

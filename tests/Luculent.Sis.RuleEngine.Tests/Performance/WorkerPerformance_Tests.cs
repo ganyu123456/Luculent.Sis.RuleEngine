@@ -57,7 +57,7 @@ public class WorkerPerformance_Tests
                         },
                     },
                 },
-                Prerule = new PreruleConfig
+                InterfaceMonitoring = new InterfaceMonitoringConfig
                 {
                     IsEnabled = true,
                     EnableManualFlagCheck = true,
@@ -99,7 +99,17 @@ public class WorkerPerformance_Tests
             new CalculateInterfaceMonitoring(loggerFactory.CreateLogger<CalculateInterfaceMonitoring>(), stateStore),
             loggerFactory.CreateLogger<RuleDispatcher>());
 
-        var prerule = new PrerulePipeline(alarmWriter, loggerFactory.CreateLogger<PrerulePipeline>());
+        var preruleStateStore = new PreruleStateStore();
+        var preruleDefStore = new PreruleDefinitionStore();
+        var preruleEval = new PreruleEvaluationService(
+            preruleDefStore,
+            preruleStateStore,
+            trendReader,
+            loggerFactory.CreateLogger<PreruleEvaluationService>());
+        var prerule = new PrerulePipeline(
+            preruleStateStore,
+            alarmWriter,
+            loggerFactory.CreateLogger<PrerulePipeline>());
 
         var service = new WorkerCalculationService(
             trendReader,
@@ -107,6 +117,7 @@ public class WorkerPerformance_Tests
             alarmWriter,
             dispatcher,
             prerule,
+            preruleEval,
             loggerFactory.CreateLogger<WorkerCalculationService>())
         {
             WorkerId = "perf-test-worker",
@@ -282,7 +293,7 @@ public class WorkerPerformance_Tests
 
         var monitorsOn = GenerateMonitors(testCount);
         var monitorsOff = GenerateMonitors(testCount);
-        foreach (var m in monitorsOff) m.Prerule.IsEnabled = false;
+        foreach (var m in monitorsOff) m.InterfaceMonitoring.IsEnabled = false;
 
         var svcOn = CreateService(monitorsOn, out _, out var awOn, out _, out _);
         var svcOff = CreateService(monitorsOff, out _, out var awOff, out _, out _);

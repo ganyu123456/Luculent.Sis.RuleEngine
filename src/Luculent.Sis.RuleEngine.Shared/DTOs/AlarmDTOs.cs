@@ -7,7 +7,6 @@ public class AlarmQueryRequest
     public DateTime? StartTime { get; set; }
     public DateTime? EndTime { get; set; }
     public List<string>? StatusKeys { get; set; }
-    public List<string>? EventTypes { get; set; }
     public bool ContainNull { get; set; }
     public int SkipCount { get; set; }
     public int MaxResultCount { get; set; } = 100;
@@ -26,7 +25,6 @@ public class AlarmEventDTO
     public string MonitorName { get; set; } = string.Empty;
     public string StatusKey { get; set; } = string.Empty;
     public string? StatusName { get; set; }
-    public string EventType { get; set; } = string.Empty;
     public DateTime OccurTime { get; set; }
     public DateTime? ClearTime { get; set; }
     public double TriggerValue { get; set; }

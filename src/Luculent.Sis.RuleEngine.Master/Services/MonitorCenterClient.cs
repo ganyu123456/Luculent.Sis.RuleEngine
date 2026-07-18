@@ -46,4 +46,30 @@ public class MonitorCenterClient
 
         return monitors ?? new List<MonitorConfig>();
     }
+
+    /// <summary>
+    /// 从 Monitor Center 拉取全量前置规则定义。
+    /// 调用 ABP 动态 Web API: GET /api/services/monitorcenter/monitorDataForPublic/GetAllPrerules
+    /// </summary>
+    public async Task<List<PreruleDefinition>> FetchAllPrerulesAsync(CancellationToken ct = default)
+    {
+        _logger.LogInformation("从 Monitor Center 拉取全量前置规则: {Url}", _http.BaseAddress);
+
+        var url = "/api/services/monitorcenter/monitorDataForPublic/GetAllPrerules";
+        var response = await _http.GetAsync(url, ct);
+        response.EnsureSuccessStatusCode();
+
+        using var doc = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
+        var root = doc!.RootElement;
+
+        var items = root.TryGetProperty("result", out var resultProp)
+            ? resultProp
+            : root;
+
+        var prerules = JsonSerializer.Deserialize<List<PreruleDefinition>>(items.GetRawText(),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        _logger.LogInformation("从 Monitor Center 拉取前置规则完成: {Count} 条", prerules?.Count ?? 0);
+
+        return prerules ?? new List<PreruleDefinition>();
+    }
 }
