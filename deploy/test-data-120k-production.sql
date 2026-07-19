@@ -24,62 +24,74 @@ DELETE FROM ssmcitemmst WHERE monitor_no LIKE 'MON%';
 -- ===== Phase 1: 创建状态主题和状态定义 =====
 
 -- 1a. Expression 表达式规则状态主题
-INSERT INTO ssmcstatusmst (status_no, status_nam, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-VALUES ('STATUS-EXPR', '表达式规则状态主题', NOW(), NOW(), 'A', -1);
+INSERT INTO ssmcstatusmst (status_no, status_nam, appdef_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
+VALUES ('STATUS-EXPR', '表达式规则状态主题', false, NOW(), NOW(), 'A', -1)
+ON CONFLICT (status_no) DO UPDATE SET status_nam = EXCLUDED.status_nam, lstusr_dtm = NOW();
 
 INSERT INTO ssmcstatuslin (statuslin_no, statuslin_nam, statuslin_dsc, statuslin_cod, statuslin_cnt, status_no, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-VALUES ('STATLIN-EXPR-1', '表达式触发', '表达式条件满足', 'expression_triggered', 1, 'STATUS-EXPR', NOW(), NOW(), 'A', -1);
+VALUES ('STATLIN-EXPR-1', '表达式触发', '表达式条件满足', 'expression_triggered', 1, 'STATUS-EXPR', NOW(), NOW(), 'A', -1)
+ON CONFLICT (statuslin_cod) DO NOTHING;
 
 -- 1b. RangeDuration 区间时长规则状态主题
-INSERT INTO ssmcstatusmst (status_no, status_nam, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-VALUES ('STATUS-RDUR', '区间时长规则状态主题', NOW(), NOW(), 'A', -1);
+INSERT INTO ssmcstatusmst (status_no, status_nam, appdef_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
+VALUES ('STATUS-RDUR', '区间时长规则状态主题', false, NOW(), NOW(), 'A', -1)
+ON CONFLICT (status_no) DO UPDATE SET status_nam = EXCLUDED.status_nam, lstusr_dtm = NOW();
 
 INSERT INTO ssmcstatuslin (statuslin_no, statuslin_nam, statuslin_dsc, statuslin_cod, statuslin_cnt, status_no, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
 VALUES
 ('STATLIN-RDUR-1', '满足条件', '区间时长条件满足', 'satisfiled', 1, 'STATUS-RDUR', NOW(), NOW(), 'A', -1),
-('STATLIN-RDUR-2', '严重告警', '区间时长严重告警', 'severe', 2, 'STATUS-RDUR', NOW(), NOW(), 'A', -1);
+('STATLIN-RDUR-2', '严重告警', '区间时长严重告警', 'severe', 2, 'STATUS-RDUR', NOW(), NOW(), 'A', -1)
+ON CONFLICT (statuslin_cod) DO NOTHING;
 
 -- 1c. FeatureValue 特征值规则状态主题
-INSERT INTO ssmcstatusmst (status_no, status_nam, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-VALUES ('STATUS-FEAT', '特征值规则状态主题', NOW(), NOW(), 'A', -1);
+INSERT INTO ssmcstatusmst (status_no, status_nam, appdef_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
+VALUES ('STATUS-FEAT', '特征值规则状态主题', false, NOW(), NOW(), 'A', -1)
+ON CONFLICT (status_no) DO UPDATE SET status_nam = EXCLUDED.status_nam, lstusr_dtm = NOW();
 
 -- 特征值状态定义: 不同的 bit value 对应不同状态
 INSERT INTO ssmcstatuslin (statuslin_no, statuslin_nam, statuslin_dsc, statuslin_cod, statuslin_cnt, status_no, fstusr_dtm, lstusr_dtm, valid_sta, org_no, statuslin_trigger)
 VALUES
 ('STATLIN-FEAT-1', '特征值1', '特征值匹配1', 'feature_val_1', 1, 'STATUS-FEAT', NOW(), NOW(), 'A', -1, 1),
 ('STATLIN-FEAT-2', '特征值2', '特征值匹配2', 'feature_val_2', 2, 'STATUS-FEAT', NOW(), NOW(), 'A', -1, 2),
-('STATLIN-FEAT-3', '特征值3', '特征值匹配3', 'feature_val_3', 3, 'STATUS-FEAT', NOW(), NOW(), 'A', -1, 3);
+('STATLIN-FEAT-3', '特征值3', '特征值匹配3', 'feature_val_3', 3, 'STATUS-FEAT', NOW(), NOW(), 'A', -1, 3)
+ON CONFLICT (statuslin_cod) DO NOTHING;
 
 -- 1d. PackageValue 打包点规则状态主题
-INSERT INTO ssmcstatusmst (status_no, status_nam, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-VALUES ('STATUS-PACK', '打包点规则状态主题', NOW(), NOW(), 'A', -1);
+INSERT INTO ssmcstatusmst (status_no, status_nam, appdef_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
+VALUES ('STATUS-PACK', '打包点规则状态主题', false, NOW(), NOW(), 'A', -1)
+ON CONFLICT (status_no) DO UPDATE SET status_nam = EXCLUDED.status_nam, lstusr_dtm = NOW();
 
 INSERT INTO ssmcstatuslin (statuslin_no, statuslin_nam, statuslin_dsc, statuslin_cod, statuslin_cnt, status_no, fstusr_dtm, lstusr_dtm, valid_sta, org_no, statuslin_trigger)
 VALUES
 ('STATLIN-PACK-1', '打包位1', '打包点位匹配1', 'pack_bit_1', 1, 'STATUS-PACK', NOW(), NOW(), 'A', -1, 1),
 ('STATLIN-PACK-2', '打包位2', '打包点位匹配2', 'pack_bit_2', 2, 'STATUS-PACK', NOW(), NOW(), 'A', -1, 2),
 ('STATLIN-PACK-3', '打包位3', '打包点位匹配3', 'pack_bit_3', 3, 'STATUS-PACK', NOW(), NOW(), 'A', -1, 4),
-('STATLIN-PACK-4', '打包位4', '打包点位匹配4', 'pack_bit_4', 4, 'STATUS-PACK', NOW(), NOW(), 'A', -1, 8);
+('STATLIN-PACK-4', '打包位4', '打包点位匹配4', 'pack_bit_4', 4, 'STATUS-PACK', NOW(), NOW(), 'A', -1, 8)
+ON CONFLICT (statuslin_cod) DO NOTHING;
 
 -- 1e. RulePackageValue 多打包点规则状态主题
-INSERT INTO ssmcstatusmst (status_no, status_nam, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-VALUES ('STATUS-RPAC', '多打包点规则状态主题', NOW(), NOW(), 'A', -1);
+INSERT INTO ssmcstatusmst (status_no, status_nam, appdef_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
+VALUES ('STATUS-RPAC', '多打包点规则状态主题', false, NOW(), NOW(), 'A', -1)
+ON CONFLICT (status_no) DO UPDATE SET status_nam = EXCLUDED.status_nam, lstusr_dtm = NOW();
 
 INSERT INTO ssmcstatuslin (statuslin_no, statuslin_nam, statuslin_dsc, statuslin_cod, statuslin_cnt, status_no, fstusr_dtm, lstusr_dtm, valid_sta, org_no, statuslin_trigger)
 VALUES
 ('STATLIN-RPAC-1', '多打包位1', '多打包位1匹配', 'multi_pack_1', 1, 'STATUS-RPAC', NOW(), NOW(), 'A', -1, 1),
 ('STATLIN-RPAC-2', '多打包位2', '多打包位2匹配', 'multi_pack_2', 2, 'STATUS-RPAC', NOW(), NOW(), 'A', -1, 2),
-('STATLIN-RPAC-3', '多打包位3', '多打包位3匹配', 'multi_pack_3', 3, 'STATUS-RPAC', NOW(), NOW(), 'A', -1, 4);
+('STATLIN-RPAC-3', '多打包位3', '多打包位3匹配', 'multi_pack_3', 3, 'STATUS-RPAC', NOW(), NOW(), 'A', -1, 4)
+ON CONFLICT (statuslin_cod) DO NOTHING;
 
 -- 1f. RuleMultiStateRangeDuration 多区间时长规则状态主题
-INSERT INTO ssmcstatusmst (status_no, status_nam, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-VALUES ('STATUS-MSRD', '多区间时长规则状态主题', NOW(), NOW(), 'A', -1);
+INSERT INTO ssmcstatusmst (status_no, status_nam, appdef_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
+VALUES ('STATUS-MSRD', '多区间时长规则状态主题', false, NOW(), NOW(), 'A', -1)
+ON CONFLICT (status_no) DO UPDATE SET status_nam = EXCLUDED.status_nam, lstusr_dtm = NOW();
 
 INSERT INTO ssmcstatuslin (statuslin_no, statuslin_nam, statuslin_dsc, statuslin_cod, statuslin_cnt, status_no, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
 VALUES
 ('STATLIN-MSRD-1', '多状态警告', '多状态区间-警告', 'ms_warning', 1, 'STATUS-MSRD', NOW(), NOW(), 'A', -1),
 ('STATLIN-MSRD-2', '多状态严重', '多状态区间-严重', 'ms_severe', 2, 'STATUS-MSRD', NOW(), NOW(), 'A', -1),
-('STATLIN-MSRD-3', '多状态紧急', '多状态区间-紧急', 'ms_critical', 3, 'STATUS-MSRD', NOW(), NOW(), 'A', -1);
+('STATLIN-MSRD-3', '多状态紧急', '多状态区间-紧急', 'ms_critical', 3, 'STATUS-MSRD', NOW(), NOW(), 'A', -1)
+ON CONFLICT (statuslin_cod) DO NOTHING;
 
 -- ===== 辅助函数: 根据序号生成差异化 Tag 名 =====
 -- Tag pools: 10 databases × 10 measure types × variable instances
@@ -174,7 +186,7 @@ BEGIN
     END LOOP;
 END $$;
 
-RAISE NOTICE 'Expression monitors: 20000 done';
+-- Expression monitors: 20000 done
 
 -- ===== Phase 3: 生成 20K RangeDuration 监视项 (区间时长规则) =====
 -- 规则: left_tag > right_threshold for N seconds
@@ -233,15 +245,15 @@ BEGIN
             (src2_no, mon_no, 'right_val', 'MPa', 1, ((30 + (i::integer % 61)))::TEXT, NOW(), NOW(), 'A', -1);
         END IF;
 
-        -- RangeDuration rule
+        -- RangeDuration rule: 50% satisfiled, 50% severe
         INSERT INTO ssmcrulerandurmst (ridur_no, statuslin_cod, status_no, related_no, enable_flag, left_id, symbol_flag, right_id, duration_cnt, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-        VALUES (rule_no, 'satisfiled', 'STATUS-RDUR', mon_no, true, 'left_val', symbol, 'right_val', duration_sec, NOW(), NOW(), 'A', -1);
+        VALUES (rule_no, CASE WHEN (i % 2) = 0 THEN 'satisfiled' ELSE 'severe' END, 'STATUS-RDUR', mon_no, true, 'left_val', symbol, 'right_val', duration_sec, NOW(), NOW(), 'A', -1);
 
         i := i + 1;
     END LOOP;
 END $$;
 
-RAISE NOTICE 'RangeDuration monitors: 20000 done';
+-- RangeDuration monitors: 20000 done
 
 -- ===== Phase 4: 生成 20K FeatureValue 监视项 (特征值规则) =====
 -- FeatureValue uses FocusSourceId + TriggerValueDefDic
@@ -282,7 +294,7 @@ BEGIN
     END LOOP;
 END $$;
 
-RAISE NOTICE 'FeatureValue monitors: 20000 done';
+-- FeatureValue monitors: 20000 done
 
 -- ===== Phase 5: 生成 20K PackageValue 监视项 (打包点规则) =====
 -- PackageValue uses FocusSourceId + TriggerValueDefDic with bit positions
@@ -318,7 +330,7 @@ BEGIN
     END LOOP;
 END $$;
 
-RAISE NOTICE 'PackageValue monitors: 20000 done';
+-- PackageValue monitors: 20000 done
 
 -- ===== Phase 6: 生成 20K RulePackageValue 监视项 (多打包点规则) =====
 -- Uses ssmcrulepacvalmst table with SourceKey, StartKey, EndKey
@@ -374,7 +386,7 @@ BEGIN
     END LOOP;
 END $$;
 
-RAISE NOTICE 'RulePackageValue monitors: 20000 done';
+-- RulePackageValue monitors: 20000 done
 
 -- ===== Phase 7: 生成 20K MultiStateRangeDuration 监视项 (多区间时长规则) =====
 -- Uses ssmcrulemulstarandurmst with multiple conditions
@@ -431,7 +443,7 @@ BEGIN
     END LOOP;
 END $$;
 
-RAISE NOTICE 'MultiStateRangeDuration monitors: 20000 done';
+-- MultiStateRangeDuration monitors: 20000 done
 
 -- ===== Phase 8: 验证数据完整性 =====
 
