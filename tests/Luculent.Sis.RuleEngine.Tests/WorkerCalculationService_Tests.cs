@@ -101,7 +101,7 @@ public class WorkerCalculationService_Tests
         var monitor = CreateMonitor();
         var now = DateTime.UtcNow;
         var values = new Dictionary<string, double?> { ["tag1"] = 95.0 };
-        var preloaded = new CalculationState { MonitorId = monitor.Id, PreviousStatus = "satisfiled" };
+        var preloaded = new CalculationState { MonitorId = monitor.Id, PreviousStatus = "satisfiled", MaxValue = 95.0, MinValue = 95.0 };
         var modifiedStates = new ConcurrentDictionary<string, CalculationState>();
 
         _preruleMock.Setup(p => p.CheckAsync(monitor))
@@ -117,7 +117,7 @@ public class WorkerCalculationService_Tests
         _alarmWriterMock.Verify(a => a.WriteHistoryAlarmAsync(
             It.IsAny<AlarmEvent>()), Times.Never);
 
-        // 无状态变更，modifiedStates 不含此 monitor
+        // max/min 也未变化，modifiedStates 不含此 monitor
         Assert.False(modifiedStates.ContainsKey(monitor.Id));
     }
 

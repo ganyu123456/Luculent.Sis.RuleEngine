@@ -32,6 +32,8 @@ public class AlarmEventDTO
     public string? LastEventName { get; set; }
     public string? Unit { get; set; }
     public string? JobId { get; set; }
+    public double? MaxValue { get; set; }
+    public double? MinValue { get; set; }
 }
 
 public class RealtimeAlarmResponse

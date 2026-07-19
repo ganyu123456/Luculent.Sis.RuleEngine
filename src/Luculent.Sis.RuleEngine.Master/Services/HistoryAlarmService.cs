@@ -42,7 +42,8 @@ public class HistoryAlarmService
         var dataSql = $"""
             SELECT monitor_id, monitor_key, monitor_name, status_key, status_name,
                    occur_time, trigger_value, worker_id,
-                   last_event_id, last_event_name, unit, job_id
+                   last_event_id, last_event_name, unit, job_id,
+                   max_value, min_value
             FROM ruleengine.alarm_events
             WHERE {where}
             ORDER BY occur_time DESC
@@ -82,6 +83,8 @@ public class HistoryAlarmService
                     LastEventName = reader.IsDBNull(9) ? null : reader.GetString(9),
                     Unit = reader.IsDBNull(10) ? null : reader.GetString(10),
                     JobId = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    MaxValue = reader.IsDBNull(12) ? null : reader.GetDouble(12),
+                    MinValue = reader.IsDBNull(13) ? null : reader.GetDouble(13),
                 });
             }
         }

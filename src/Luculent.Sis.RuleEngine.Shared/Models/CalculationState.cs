@@ -43,6 +43,14 @@ public class CalculationState
     /// <summary>接口监控: 关联启停监视项的标签缓存</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<TagSample>? RelatedMonitorTags { get; set; }
+
+    /// <summary>当前状态段内最大值</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public double MaxValue { get; set; }
+
+    /// <summary>当前状态段内最小值</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public double MinValue { get; set; }
 }
 
 /// <summary>标签采样点</summary>

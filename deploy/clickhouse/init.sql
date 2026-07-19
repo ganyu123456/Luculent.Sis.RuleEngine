@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS ruleengine.alarm_events (
     last_event_name   Nullable(String) COMMENT '上一次事件状态名称',
     unit              Nullable(String) COMMENT '单位',
     job_id            Nullable(String) COMMENT '任务 ID',
+    max_value         Nullable(Float64) COMMENT '上一状态段内最大值',
+    min_value         Nullable(Float64) COMMENT '上一状态段内最小值',
 
     date              Date MATERIALIZED toDate(occur_time)
 ) ENGINE = MergeTree()

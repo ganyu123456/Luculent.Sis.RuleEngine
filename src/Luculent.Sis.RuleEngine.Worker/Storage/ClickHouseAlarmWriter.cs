@@ -239,7 +239,8 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
             (monitor_id, monitor_key, monitor_name, status_key, status_name,
              occur_time, trigger_value, threshold_value,
              rule_type, config_version, worker_id, shard_id,
-             last_event_id, last_event_name, unit, job_id)
+             last_event_id, last_event_name, unit, job_id,
+             max_value, min_value)
             VALUES
             {values}
             """;
@@ -262,13 +263,21 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
         var unit = e.Unit != null ? $"'{EscapeSql(e.Unit)}'" : "NULL";
         var jobId = e.JobId != null ? $"'{EscapeSql(e.JobId)}'" : "NULL";
 
+        var maxValue = e.MaxValue.HasValue
+            ? e.MaxValue.Value.ToString(CultureInfo.InvariantCulture)
+            : "NULL";
+        var minValue = e.MinValue.HasValue
+            ? e.MinValue.Value.ToString(CultureInfo.InvariantCulture)
+            : "NULL";
+
         return $"('{EscapeSql(e.MonitorId)}', '{EscapeSql(e.MonitorKey)}', '{EscapeSql(e.MonitorName)}', " +
                $"'{EscapeSql(e.StatusKey)}', {statusName}, " +
                $"'{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}', " +
                $"{e.TriggerValue.ToString(CultureInfo.InvariantCulture)}, {threshold}, " +
                $"0, '{e.ConfigVersion:yyyy-MM-dd HH:mm:ss.fff}', " +
                $"'{EscapeSql(e.WorkerId)}', 0, " +
-               $"{lastEventId}, {lastEventName}, {unit}, {jobId})";
+               $"{lastEventId}, {lastEventName}, {unit}, {jobId}, " +
+               $"{maxValue}, {minValue})";
     }
 
     private static async Task EnableAsyncInsertAsync(ClickHouseConnection conn, CancellationToken ct)

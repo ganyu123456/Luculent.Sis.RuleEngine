@@ -30,4 +30,10 @@ public class AlarmEvent
     public string? LastEventName { get; set; }
     public string? Unit { get; set; }
     public string? JobId { get; set; }
+
+    /// <summary>上一状态段内的最大值（由状态迁移事件携带）</summary>
+    public double? MaxValue { get; set; }
+
+    /// <summary>上一状态段内的最小值（由状态迁移事件携带）</summary>
+    public double? MinValue { get; set; }
 }

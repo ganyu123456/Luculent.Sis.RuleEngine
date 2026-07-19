@@ -253,11 +253,15 @@ public class WorkerCalculationService : BackgroundService
                             WorkerId = WorkerId,
                             LastEventId = lastEventId,
                             LastEventName = lastEventName,
+                            MaxValue = preruleState.MaxValue,
+                            MinValue = preruleState.MinValue,
                         });
 
                         preruleState.PreviousEventOccurTimeMs = nowMs;
                         preruleState.PreviousEventId = $"{monitor.Id}_{nowMs}_trigger";
                         preruleState.PreviousStatus = "";
+                        preruleState.MaxValue = 0;
+                        preruleState.MinValue = 0;
                         modifiedStates[monitor.Id] = preruleState;
                     }
                 }
@@ -281,6 +285,14 @@ public class WorkerCalculationService : BackgroundService
             // 实时报警只在状态变化时写入，保留报警开始时间
             if (newStatus != state.PreviousStatus)
             {
+                var prevMax = state.MaxValue;
+                var prevMin = state.MinValue;
+                var currentValue = result.TriggerValue ?? 0;
+
+                // 初始化新状态的 max/min
+                state.MaxValue = currentValue;
+                state.MinValue = currentValue;
+
                 if (result.HasEvent)
                 {
                     var alarmStates = new List<string>();
@@ -334,6 +346,8 @@ public class WorkerCalculationService : BackgroundService
                     JobId = $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
                     LastEventId = lastEventId,
                     LastEventName = lastEventName,
+                    MaxValue = prevMax,
+                    MinValue = prevMin,
                 });
 
                 var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
@@ -341,6 +355,24 @@ public class WorkerCalculationService : BackgroundService
                 state.PreviousEventId = $"{monitor.Id}_{nowMs}_trigger";
                 state.PreviousStatus = newStatus;
                 modifiedStates[monitor.Id] = state;
+            }
+            else
+            {
+                // 状态未变 → 更新当前段极值
+                var currentValue = result.TriggerValue ?? 0;
+                var changed = false;
+                if (currentValue > state.MaxValue)
+                {
+                    state.MaxValue = currentValue;
+                    changed = true;
+                }
+                if (currentValue < state.MinValue)
+                {
+                    state.MinValue = currentValue;
+                    changed = true;
+                }
+                if (changed)
+                    modifiedStates[monitor.Id] = state;
             }
 
             monitor.LastCalculateTime = now;
