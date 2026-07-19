@@ -11,6 +11,7 @@ public class AlarmSnapshot
     public DateTime OccurTime { get; set; }
     public DateTime ConfigVersion { get; set; }
     public string WorkerId { get; set; } = string.Empty;
+    public int RuleType { get; set; }
 }
 
 public class AlarmEvent
@@ -36,4 +37,6 @@ public class AlarmEvent
 
     /// <summary>上一状态段内的最小值（由状态迁移事件携带）</summary>
     public double? MinValue { get; set; }
+
+    public int RuleType { get; set; }
 }

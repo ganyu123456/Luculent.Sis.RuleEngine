@@ -231,6 +231,7 @@ public class WorkerCalculationService : BackgroundService
                             OccurTime = now,
                             ConfigVersion = t.Monitor.LastModificationTime,
                             WorkerId = WorkerId,
+                            RuleType = (int)t.Monitor.RuleType,
                         }));
                     }
                 }
@@ -256,6 +257,7 @@ public class WorkerCalculationService : BackgroundService
                     LastEventName = t.LastEventName,
                     MaxValue = t.PrevMax,
                     MinValue = t.PrevMin,
+                    RuleType = (int)t.Monitor.RuleType,
                 }));
             }
 

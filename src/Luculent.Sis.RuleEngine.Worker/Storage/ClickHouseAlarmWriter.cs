@@ -274,7 +274,7 @@ public class ClickHouseAlarmWriter : IAlarmWriter, IAsyncDisposable
                $"'{EscapeSql(e.StatusKey)}', {statusName}, " +
                $"'{e.OccurTime:yyyy-MM-dd HH:mm:ss.fff}', " +
                $"{e.TriggerValue.ToString(CultureInfo.InvariantCulture)}, {threshold}, " +
-               $"0, '{e.ConfigVersion:yyyy-MM-dd HH:mm:ss.fff}', " +
+               $"{e.RuleType}, '{e.ConfigVersion:yyyy-MM-dd HH:mm:ss.fff}', " +
                $"'{EscapeSql(e.WorkerId)}', 0, " +
                $"{lastEventId}, {lastEventName}, {unit}, {jobId}, " +
                $"{maxValue}, {minValue})";

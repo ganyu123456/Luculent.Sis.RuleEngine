@@ -93,20 +93,22 @@ dotnet build && docker compose build && docker compose up -d
 
 ### MonitorCenter → sis-service
 
-**每次修改 MonitorCenter 代码后必须执行以下 3 步：**
+**每次修改 MonitorCenter 代码后必须执行以下步骤：**
 
 ```bash
 # 1. Build
 cd 00-Luculent.Sis.MonitorCenter
 dotnet build Luculent.Sis.MonitorCenter/Luculent.Sis.MonitorCenter.csproj -c Release
 
-# 2. 拷贝 DLL
-cp Luculent.Sis.MonitorCenter/bin/Release/net6.0/Luculent.Sis.MonitorCenter.dll \
-   ../00-LiEMS_AIcode/SIS.Service/Plugins/
+# 2. 拷贝 DLL 到容器 (Plugins 不是挂载卷，必须用 docker cp)
+docker cp Luculent.Sis.MonitorCenter/bin/Release/net6.0/Luculent.Sis.MonitorCenter.dll \
+   sis-service:/app/Plugins/Luculent.Sis.MonitorCenter.dll
 
 # 3. 重启容器
 docker restart sis-service
 ```
+
+**注意:** Plugins 目录不是 Docker volume，`docker restart` 不会自动加载宿主机 Plugins 目录的新 DLL。必须用 `docker cp` 拷贝。
 
 **忘记步骤 2 会导致 sis-service 使用旧 DLL，所有 MonitorCenter 修改丢失。**
 
@@ -136,10 +138,22 @@ WorkerCalculationService.ComputeMonitor
   → MonitorCenter HistoryMonitor/GetAllForList (配对展示)
 ```
 
+## SimulatedTrendReader
+
+开发/测试环境使用正弦波模拟器生成测点数据：
+
+- **普通 tag**: 正弦波 0-200，独立频率/相位/振幅分布于 0-200 范围
+- **`feat_` 前缀 tag**: 生成离散整数 1/2/3（每 15s 切换），用于 FeatureValue 规则 TriggerValueDefDic 匹配
+- FeatureValue 测试数据 source alias 必须以 `feat_` 前缀开始，否则正弦波值极少命中 {1,2,3}
+
 ## 常见陷阱
 
 1. **IN 子句过大** — ClickHouse `max_query_size` ≈ 256KB，monitorKeys IN 子句不要超过 5000 项
 2. **Expression 计算器不设 TriggerValue** — 导致 MaxValue/MinValue 始终为 0
 3. **状态序列化丢失** — `WhenWritingDefault` 导致值为 0 的 double 字段不持久化
-4. **MonitorCenter DLL 过期** — 重启 sis-service 之前忘记重新编译并拷贝 DLL
+4. **MonitorCenter DLL 过期** — 必须用 `docker cp` 拷贝 DLL 到容器，Plugin 目录不是挂载卷
 5. **API 路由前缀** — 是 `/api/services/monitorcenter/`，不是 `/api/services/app/`
+6. **FocusSourceId 映射** — MonitorDataForPublicAppService 必须返回 source alias 而非 source_no
+7. **TriggerValueDefDic 构建** — 仅当所有 `statuslin_trigger > 0` 且唯一时才构建 dict
+8. **MultiStateRule Conditions** — 需按 TagName 分组 ssmcrulemulstarandurmst 行来填充
+9. **rule_type 列** — AlarmEvent.RuleType 必须从 MonitorConfig.RuleType 填充，ClickHouse FormatRow 不再硬编码 0

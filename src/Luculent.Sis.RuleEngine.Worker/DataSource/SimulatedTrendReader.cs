@@ -62,6 +62,14 @@ public class SimulatedTrendReader : ITrendDataReader
     {
         var hash = (uint)tagName.GetHashCode(StringComparison.Ordinal);
 
+        // FeatureValue 标签生成离散整数 1/2/3，用于 TriggerValueDefDic 匹配
+        if (tagName.StartsWith("feat_", StringComparison.Ordinal))
+        {
+            // 每 15 秒切换一次状态，不同 tag 有不同的相位偏移
+            var cycleIndex = ((long)elapsedSeconds / 15 + hash % 3) % 3;
+            return cycleIndex + 1; // 1, 2, or 3
+        }
+
         // 从哈希派生的参数
         var phase = (hash % 360) * Math.PI / 180.0;          // 0 ~ 2π
         var periodFactor = 0.5 + (hash % 100) / 200.0;       // 0.5 ~ 1.0

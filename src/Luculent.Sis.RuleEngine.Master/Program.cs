@@ -43,7 +43,7 @@ if (!string.IsNullOrEmpty(monitorCenterUrl))
     builder.Services.AddHttpClient<MonitorCenterClient>(client =>
     {
         client.BaseAddress = new Uri(monitorCenterUrl);
-        client.Timeout = TimeSpan.FromSeconds(30);
+        client.Timeout = TimeSpan.FromSeconds(180);
     });
 }
 

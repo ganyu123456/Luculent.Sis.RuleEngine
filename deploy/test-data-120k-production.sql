@@ -286,9 +286,9 @@ BEGIN
         INSERT INTO ssmcitemmst (monitor_no, monitor_id, monitor_nam, monitor_dsc, status_no, refresh_cnt, source_no, enable_flag, prerule_no, rule_flag, node_no, manual_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
         VALUES (mon_no, mon_id, mon_nam, 'FeatureValue monitor #' || i, 'STATUS-FEAT', refresh_sec, src1_no, true, NULL, 4, NULL, 1, NOW(), NOW(), 'A', -1);
 
-        -- Data source: one RealDB tag
+        -- Data source: use 'feat_' prefix in alias so SimulatedTrendReader generates discrete values (1,2,3)
         INSERT INTO ssmcsourcemst (source_no, group_no, source_id, unit_nam, source_flag, source_cod, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-        VALUES (src1_no, mon_no, 'feature_src', '', 3, tag_name, NOW(), NOW(), 'A', -1);
+        VALUES (src1_no, mon_no, 'feat_' || tag_name, '', 3, tag_name, NOW(), NOW(), 'A', -1);
 
         i := i + 1;
     END LOOP;
@@ -399,45 +399,46 @@ DECLARE
     mon_id VARCHAR(64);
     mon_nam VARCHAR(100);
     src1_no VARCHAR(40);
-    src2_no VARCHAR(40);
     rule1_no VARCHAR(40);
     rule2_no VARCHAR(40);
     tag_name TEXT;
-    ref_tag TEXT;
     refresh_sec INTEGER;
     duration1 INTEGER;
     duration2 INTEGER;
+    threshold1 INTEGER;
+    threshold2 INTEGER;
 BEGIN
     WHILE i < total LOOP
         mon_no := 'MSRD-' || LPAD(i::TEXT, 7, '0');
         mon_id := 'msrd-mon-' || LPAD(i::TEXT, 7, '0');
         mon_nam := 'MultiStateRangeDuration Monitor ' || LPAD(i::TEXT, 5, '0');
         src1_no := 'MSRD-SRC1-' || LPAD(i::TEXT, 7, '0');
-        src2_no := 'MSRD-SRC2-' || LPAD(i::TEXT, 7, '0');
         rule1_no := 'MSRD-RULE1-' || LPAD(i::TEXT, 7, '0');
         rule2_no := 'MSRD-RULE2-' || LPAD(i::TEXT, 7, '0');
 
         -- 多样化 tag 名 (pool 100000)
         tag_name := gen_tag_name(i, 100000);
-        ref_tag := gen_tag_name(i + 7000, 100000);
 
         refresh_sec := CASE WHEN (i % 5) = 0 THEN 1 WHEN (i % 5) = 1 THEN 5 WHEN (i % 5) = 2 THEN 10 WHEN (i % 5) = 3 THEN 30 ELSE 60 END;
         duration1 := i % 31;
         duration2 := (i % 61);
+        -- 数值阈值差异化: 30-90 范围
+        threshold1 := 30 + (i % 31);
+        threshold2 := 50 + (i % 41);
 
         INSERT INTO ssmcitemmst (monitor_no, monitor_id, monitor_nam, monitor_dsc, status_no, refresh_cnt, source_no, enable_flag, prerule_no, rule_flag, node_no, manual_flag, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
         VALUES (mon_no, mon_id, mon_nam, 'MultiStateRangeDuration monitor #' || i, 'STATUS-MSRD', refresh_sec, src1_no, true, NULL, 9, NULL, 1, NOW(), NOW(), 'A', -1);
 
+        -- 单个数据源: tag value (right_id 改为数值阈值，供计算器 CompareSymbol 直接比对)
         INSERT INTO ssmcsourcemst (source_no, group_no, source_id, unit_nam, source_flag, source_cod, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
         VALUES
-        (src1_no, mon_no, 'ms_val', '°C', 3, tag_name, NOW(), NOW(), 'A', -1),
-        (src2_no, mon_no, 'ms_ref', '°C', 3, ref_tag,  NOW(), NOW(), 'A', -1);
+        (src1_no, mon_no, 'ms_val', '°C', 3, tag_name, NOW(), NOW(), 'A', -1);
 
-        -- Two multi-state conditions per monitor (different severity levels)
+        -- Multi-state conditions: right_id 为数值阈值 (计算器 RightValue 直接解析)
         INSERT INTO ssmcrulemulstarandurmst (ridur_no, statuslin_cod, status_no, related_no, enable_flag, left_id, symbol_flag, right_id, duration_cnt, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
         VALUES
-        (rule1_no, 'ms_warning', 'STATUS-MSRD', mon_no, true, 'ms_val', 1, 'ms_ref', duration1, NOW(), NOW(), 'A', -1),
-        (rule2_no, 'ms_severe',  'STATUS-MSRD', mon_no, true, 'ms_val', 1, 'ms_ref', duration2, NOW(), NOW(), 'A', -1);
+        (rule1_no, 'ms_warning', 'STATUS-MSRD', mon_no, true, 'ms_val', 1, threshold1::TEXT, duration1, NOW(), NOW(), 'A', -1),
+        (rule2_no, 'ms_severe',  'STATUS-MSRD', mon_no, true, 'ms_val', 1, threshold2::TEXT, duration2, NOW(), NOW(), 'A', -1);
 
         i := i + 1;
     END LOOP;
