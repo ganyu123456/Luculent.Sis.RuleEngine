@@ -12,17 +12,14 @@ namespace Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
 /// </summary>
 public partial class CalculateRuleExpression : RuleCalculatorBase
 {
-    // 单例 Interpreter，表达式解析结果缓存于 DynamicExpresso 内部
     private static readonly Interpreter Interpreter = new(
         InterpreterOptions.DefaultCaseInsensitive);
 
-    // 系统命名空间前缀 — 这些不是变量名
     private static readonly HashSet<string> SystemNamespaces = new(StringComparer.OrdinalIgnoreCase)
     {
         "Math", "WAS", "SISAI", "IM", "IC", "MathE", "SuShine",
     };
 
-    // C# 关键字，不应被当作变量名处理
     private static readonly HashSet<string> ReservedWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "true", "false", "null",
@@ -38,39 +35,53 @@ public partial class CalculateRuleExpression : RuleCalculatorBase
 
         try
         {
-            // Step 1: 从表达式提取候选变量名（只处理实际出现的，避免 F1 全量遍历）
+            // Step 1: 从 MonitorSources 构建 source_key → 实际值 映射
+            // data 字典的 key 是实际 tag 名 (source_cod)，表达式变量是 source_id (alias)
+            var sourceMap = BuildSourceValueMap(monitor, data);
+
+            // Step 2: 从表达式提取候选变量名
             var candidates = VariableRegex().Matches(script)
                 .Select(m => m.Value)
                 .Where(v => !IsSystemCall(v) && !ReservedWords.Contains(v))
                 .Distinct()
                 .ToList();
 
-            // Step 2: 处理含点号的 tag 名 → 安全标识符
+            // Step 3: 处理含点号的 tag 名 → 安全标识符
             var expr = script;
-            var dottedMap = new Dictionary<string, string>(); // original → safeName
+            var dottedMap = new Dictionary<string, string>();
             var counter = 0;
-            foreach (var name in candidates.Where(n => n.Contains('.')))
+            foreach (var name in candidates)
             {
-                if (!data.ContainsKey(name)) continue;
+                if (!name.Contains('.'))
+                    continue;
+
+                // 先查 sourceMap (alias → value)，再查 data (直接 tag 名)
+                if (!sourceMap.ContainsKey(name) && !data.ContainsKey(name))
+                    continue;
 
                 var safeName = $"__v{counter++}";
                 dottedMap[name] = safeName;
                 expr = expr.Replace(name, safeName);
             }
 
-            // Step 3: 只设置表达式实际引用的变量
+            // Step 4: 只设置表达式实际引用的变量
             var pars = new List<Parameter>(candidates.Count);
             foreach (var name in candidates)
             {
-                if (!data.TryGetValue(name, out var val) || !val.HasValue)
-                    continue;
-
                 var paramName = dottedMap.TryGetValue(name, out var sn) ? sn : name;
-                pars.Add(new Parameter(paramName, val.Value));
+
+                // 优先从 sourceMap 取值 → data 字典作为 fallback
+                if (sourceMap.TryGetValue(name, out var sv) && sv.HasValue)
+                {
+                    pars.Add(new Parameter(paramName, sv.Value));
+                }
+                else if (data.TryGetValue(name, out var dv) && dv.HasValue)
+                {
+                    pars.Add(new Parameter(paramName, dv.Value));
+                }
             }
 
-            // Step 4: DynamicExpresso 求值（解析结果缓存，零 GC 压力，F2 消除）
-            // 即使 pars 为空，常量表达式 (如 "100 > 50" 或 "true") 也应正常求值
+            // Step 5: DynamicExpresso 求值
             var evalResult = Interpreter.Eval<bool>(expr, pars.ToArray());
 
             if (evalResult)
@@ -89,6 +100,43 @@ public partial class CalculateRuleExpression : RuleCalculatorBase
         }
 
         return RuleCalculateResult.Empty();
+    }
+
+    /// <summary>
+    /// 从 MonitorSources 构建 source_id → 实际值 的映射。
+    /// RealDB (SourceType=3): 通过 RelatedId (tag 名) 查 data 字典
+    /// Static (SourceType=1): 直接解析 RelatedId 为数值
+    /// </summary>
+    private static Dictionary<string, double?> BuildSourceValueMap(
+        MonitorConfig monitor, IDictionary<string, double?> data)
+    {
+        var map = new Dictionary<string, double?>();
+        foreach (var src in monitor.MonitorSources)
+        {
+            if (string.IsNullOrEmpty(src.Key))
+                continue;
+
+            if (src.SourceType == 1) // Static value
+            {
+                if (double.TryParse(src.RelatedId, NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out var val))
+                    map[src.Key] = val;
+            }
+            else if (src.SourceType == 3) // RealDB tag
+            {
+                if (data.TryGetValue(src.RelatedId, out var tv))
+                    map[src.Key] = tv;
+                else
+                    map[src.Key] = null;
+            }
+            else // Other sources — try data directly
+            {
+                data.TryGetValue(src.RelatedId, out var ov);
+                map[src.Key] = ov;
+            }
+        }
+
+        return map;
     }
 
     private static bool IsSystemCall(string identifier)

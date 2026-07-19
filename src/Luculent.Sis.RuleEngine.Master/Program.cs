@@ -20,8 +20,8 @@ builder.WebHost.ConfigureKestrel(opts =>
 
 builder.Services.AddGrpc(opts =>
 {
-    opts.MaxReceiveMessageSize = 50 * 1024 * 1024; // 50MB — 支持 10K+ 监视项配置推送
-    opts.MaxSendMessageSize = 50 * 1024 * 1024;
+    opts.MaxReceiveMessageSize = 500 * 1024 * 1024; // 500MB — 支持 120K+ 监视项配置推送
+    opts.MaxSendMessageSize = 500 * 1024 * 1024;
 });
 
 // ===== Master 服务注册 =====

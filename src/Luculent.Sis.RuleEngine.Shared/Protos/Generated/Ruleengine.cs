@@ -44,7 +44,7 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.RegisterRequest), global::Luculent.Sis.RuleEngine.Shared.Grpc.RegisterRequest.Parser, new[]{ "WorkerId" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.Heartbeat), global::Luculent.Sis.RuleEngine.Shared.Grpc.Heartbeat.Parser, new[]{ "MonitorCount" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.MasterMessage), global::Luculent.Sis.RuleEngine.Shared.Grpc.MasterMessage.Parser, new[]{ "ConfigPush", "Shutdown" }, new[]{ "Payload" }, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush), global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush.Parser, new[]{ "MonitorsJson", "PrerulesJson" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush), global::Luculent.Sis.RuleEngine.Shared.Grpc.ConfigPush.Parser, new[]{ "MonitorsJson", "PrerulesJson", "ChunkIndex", "TotalChunks" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Luculent.Sis.RuleEngine.Shared.Grpc.ShutdownCommand), global::Luculent.Sis.RuleEngine.Shared.Grpc.ShutdownCommand.Parser, new[]{ "Reason" }, null, null, null, null)
           }));
     }
@@ -1073,6 +1073,8 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
     public ConfigPush(ConfigPush other) : this() {
       monitorsJson_ = other.monitorsJson_;
       prerulesJson_ = other.prerulesJson_;
+      chunkIndex_ = other.chunkIndex_;
+      totalChunks_ = other.totalChunks_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -1112,6 +1114,36 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       }
     }
 
+    /// <summary>Field number for the "chunk_index" field.</summary>
+    public const int ChunkIndexFieldNumber = 3;
+    private int chunkIndex_;
+    /// <summary>
+    /// 0-based chunk index (0 = first, or non-chunked)
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int ChunkIndex {
+      get { return chunkIndex_; }
+      set {
+        chunkIndex_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "total_chunks" field.</summary>
+    public const int TotalChunksFieldNumber = 4;
+    private int totalChunks_;
+    /// <summary>
+    /// total chunks; 0 or 1 = non-chunked (backward compat)
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int TotalChunks {
+      get { return totalChunks_; }
+      set {
+        totalChunks_ = value;
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -1129,6 +1161,8 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       }
       if (MonitorsJson != other.MonitorsJson) return false;
       if (PrerulesJson != other.PrerulesJson) return false;
+      if (ChunkIndex != other.ChunkIndex) return false;
+      if (TotalChunks != other.TotalChunks) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -1138,6 +1172,8 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       int hash = 1;
       if (MonitorsJson.Length != 0) hash ^= MonitorsJson.GetHashCode();
       if (PrerulesJson.Length != 0) hash ^= PrerulesJson.GetHashCode();
+      if (ChunkIndex != 0) hash ^= ChunkIndex.GetHashCode();
+      if (TotalChunks != 0) hash ^= TotalChunks.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -1164,6 +1200,14 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
         output.WriteRawTag(18);
         output.WriteString(PrerulesJson);
       }
+      if (ChunkIndex != 0) {
+        output.WriteRawTag(24);
+        output.WriteInt32(ChunkIndex);
+      }
+      if (TotalChunks != 0) {
+        output.WriteRawTag(32);
+        output.WriteInt32(TotalChunks);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -1182,6 +1226,14 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
         output.WriteRawTag(18);
         output.WriteString(PrerulesJson);
       }
+      if (ChunkIndex != 0) {
+        output.WriteRawTag(24);
+        output.WriteInt32(ChunkIndex);
+      }
+      if (TotalChunks != 0) {
+        output.WriteRawTag(32);
+        output.WriteInt32(TotalChunks);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -1197,6 +1249,12 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       }
       if (PrerulesJson.Length != 0) {
         size += 1 + pb::CodedOutputStream.ComputeStringSize(PrerulesJson);
+      }
+      if (ChunkIndex != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeInt32Size(ChunkIndex);
+      }
+      if (TotalChunks != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeInt32Size(TotalChunks);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -1215,6 +1273,12 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
       }
       if (other.PrerulesJson.Length != 0) {
         PrerulesJson = other.PrerulesJson;
+      }
+      if (other.ChunkIndex != 0) {
+        ChunkIndex = other.ChunkIndex;
+      }
+      if (other.TotalChunks != 0) {
+        TotalChunks = other.TotalChunks;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -1243,6 +1307,14 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
             PrerulesJson = input.ReadString();
             break;
           }
+          case 24: {
+            ChunkIndex = input.ReadInt32();
+            break;
+          }
+          case 32: {
+            TotalChunks = input.ReadInt32();
+            break;
+          }
         }
       }
     #endif
@@ -1268,6 +1340,14 @@ namespace Luculent.Sis.RuleEngine.Shared.Grpc {
           }
           case 18: {
             PrerulesJson = input.ReadString();
+            break;
+          }
+          case 24: {
+            ChunkIndex = input.ReadInt32();
+            break;
+          }
+          case 32: {
+            TotalChunks = input.ReadInt32();
             break;
           }
         }

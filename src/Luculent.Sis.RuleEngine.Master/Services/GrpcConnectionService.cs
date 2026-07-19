@@ -172,30 +172,48 @@ public class GrpcConnectionService : RuleEngineService.RuleEngineServiceBase
         }
     }
 
+    private const int ChunkSize = 15_000;
+
     private async Task PushConfigAsync(
         string workerId,
         IServerStreamWriter<MasterMessage> responseStream,
         CancellationToken ct)
     {
         var monitors = _configService.GetByWorkerId(workerId);
-        var monitorsJson = JsonSerializer.Serialize(monitors, JsonOpts);
 
         var prerules = _preruleStore.GetAll();
         var prerulesJson = prerules.Count > 0
             ? JsonSerializer.Serialize(prerules, JsonOpts)
             : "";
 
-        await responseStream.WriteAsync(new MasterMessage
-        {
-            ConfigPush = new ConfigPush
-            {
-                MonitorsJson = monitorsJson,
-                PrerulesJson = prerulesJson,
-            }
-        }, ct);
+        var totalChunks = monitors.Count <= ChunkSize
+            ? 0
+            : (int)Math.Ceiling((double)monitors.Count / ChunkSize);
+        var iterations = Math.Max(1, totalChunks);
 
-        _logger.LogInformation("推送配置到 Worker {WorkerId}: {Count} 监视项, {PreruleCount} 前置规则",
-            workerId, monitors.Count, prerules.Count);
+        for (var i = 0; i < iterations; i++)
+        {
+            var chunk = totalChunks <= 1
+                ? monitors
+                : monitors.Skip(i * ChunkSize).Take(ChunkSize).ToList();
+
+            var monitorsJson = JsonSerializer.Serialize(chunk, JsonOpts);
+
+            await responseStream.WriteAsync(new MasterMessage
+            {
+                ConfigPush = new ConfigPush
+                {
+                    MonitorsJson = monitorsJson,
+                    PrerulesJson = i == 0 ? prerulesJson : "",
+                    ChunkIndex = i,
+                    TotalChunks = totalChunks,
+                }
+            }, ct);
+        }
+
+        _logger.LogInformation(
+            "推送配置到 Worker {WorkerId}: {Count} 监视项, {PreruleCount} 前置规则, {Chunks} 分块",
+            workerId, monitors.Count, prerules.Count, iterations);
     }
 
     private async Task RebalanceIfNeeded()

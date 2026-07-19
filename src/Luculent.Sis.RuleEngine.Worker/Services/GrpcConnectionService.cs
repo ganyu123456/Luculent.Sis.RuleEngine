@@ -80,8 +80,8 @@ public class GrpcConnectionService : IAsyncDisposable
         _cts = CancellationTokenSource.CreateLinkedTokenSource(appCt);
         _channel = GrpcChannel.ForAddress(_masterUrl, new GrpcChannelOptions
         {
-            MaxReceiveMessageSize = 50 * 1024 * 1024, // 50MB — 支持 10K+ 监视项配置
-            MaxSendMessageSize = 50 * 1024 * 1024,
+            MaxReceiveMessageSize = 500 * 1024 * 1024, // 500MB — 支持 120K+ 监视项配置
+            MaxSendMessageSize = 500 * 1024 * 1024,
         });
         var client = new RuleEngineService.RuleEngineServiceClient(_channel);
         _call = client.Connect(cancellationToken: _cts.Token);
@@ -177,11 +177,14 @@ public class GrpcConnectionService : IAsyncDisposable
         }
     }
 
+    private List<MonitorConfig>? _chunkBuffer;
+    private int _chunkTotal;
+
     private Task HandleConfigPush(ConfigPush push)
     {
         try
         {
-            // 处理前置规则定义
+            // 前置规则 — 仅第一个分块包含
             if (!string.IsNullOrEmpty(push.PrerulesJson))
             {
                 var prerules = JsonSerializer.Deserialize<List<PreruleDefinition>>(
@@ -195,35 +198,70 @@ public class GrpcConnectionService : IAsyncDisposable
                 }
             }
 
-            // 处理监视项配置
-            var monitors = JsonSerializer.Deserialize<List<MonitorConfig>>(
+            var chunkMonitors = JsonSerializer.Deserialize<List<MonitorConfig>>(
                 push.MonitorsJson, JsonOpts);
 
-            if (monitors == null || monitors.Count == 0)
+            if (chunkMonitors == null || chunkMonitors.Count == 0)
                 return Task.CompletedTask;
 
-            var currentIds = new HashSet<string>(_calcService.AssignedMonitors.Keys);
-            var newIds = new HashSet<string>(monitors.Select(m => m.Id));
-            var added = monitors.Where(m => !currentIds.Contains(m.Id)).ToList();
-            var removed = currentIds.Where(id => !newIds.Contains(id)).ToList();
+            // 非分块模式 (backward compat)
+            if (push.TotalChunks <= 1)
+            {
+                ApplyMonitors(chunkMonitors);
+                return Task.CompletedTask;
+            }
 
-            foreach (var m in monitors)
-                _calcService.AssignedMonitors[m.Id] = m;
-            foreach (var id in removed)
-                _calcService.AssignedMonitors.TryRemove(id, out _);
+            // 分块模式 — 累积
+            if (push.ChunkIndex == 0)
+            {
+                _chunkBuffer = new List<MonitorConfig>(chunkMonitors);
+                _chunkTotal = push.TotalChunks;
+                _logger.LogDebug(
+                    "Worker {WorkerId} 开始接收分块: {Count} 监视项 (chunk 0/{Total})",
+                    _workerId, chunkMonitors.Count, push.TotalChunks);
+            }
+            else if (_chunkBuffer != null)
+            {
+                _chunkBuffer.AddRange(chunkMonitors);
+                _logger.LogDebug(
+                    "Worker {WorkerId} 接收分块: {Count} 监视项 (chunk {Index}/{Total})",
+                    _workerId, chunkMonitors.Count, push.ChunkIndex, push.TotalChunks);
+            }
 
-            _calcService.InvalidateTagNameCache();
-
-            _logger.LogInformation(
-                "Worker {WorkerId} 配置更新: {Count} 监视项 (+{Added} -{Removed})",
-                _workerId, monitors.Count, added.Count, removed.Count);
+            // 最后一个分块 — 应用完整配置
+            if (push.ChunkIndex == push.TotalChunks - 1 && _chunkBuffer != null)
+            {
+                var allMonitors = _chunkBuffer;
+                _chunkBuffer = null;
+                ApplyMonitors(allMonitors);
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Worker {WorkerId} 配置解析失败", _workerId);
+            _chunkBuffer = null;
         }
 
         return Task.CompletedTask;
+    }
+
+    private void ApplyMonitors(List<MonitorConfig> monitors)
+    {
+        var currentIds = new HashSet<string>(_calcService.AssignedMonitors.Keys);
+        var newIds = new HashSet<string>(monitors.Select(m => m.Id));
+        var added = monitors.Where(m => !currentIds.Contains(m.Id)).ToList();
+        var removed = currentIds.Where(id => !newIds.Contains(id)).ToList();
+
+        foreach (var m in monitors)
+            _calcService.AssignedMonitors[m.Id] = m;
+        foreach (var id in removed)
+            _calcService.AssignedMonitors.TryRemove(id, out _);
+
+        _calcService.InvalidateTagNameCache();
+
+        _logger.LogInformation(
+            "Worker {WorkerId} 配置更新: {Count} 监视项 (+{Added} -{Removed})",
+            _workerId, monitors.Count, added.Count, removed.Count);
     }
 
     public async ValueTask DisposeAsync()
