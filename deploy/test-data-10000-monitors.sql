@@ -78,7 +78,7 @@ BEGIN
 
         -- MonitorItem
         INSERT INTO ssmcitemmst (monitor_no, monitor_id, monitor_nam, monitor_dsc, status_no, refresh_cnt, source_no, enable_flag, prerule_no, rule_flag, node_no, manual_flag, stop_monitor_key, fail_limit, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-        VALUES (monitor_no, monitor_id, monitor_nam, '', '88a2ff2f827f487e83bda61736ca3ad1', 1, '', true, prerule_no, 2, '88a2ff2f827f487e83bda6173afa1234', 1, '', NULL, NOW(), NOW(), 'A', -1);
+        VALUES (monitor_no, monitor_id, monitor_nam, '', '39edc1419d86d38933a57f1e156b4991', 1, '', true, prerule_no, 2, '88a2ff2f827f487e83bda6173afa1234', 1, '', NULL, NOW(), NOW(), 'A', -1);
 
         -- 数据源 1: RealDB → db05.test1 (source_flag=3)
         src1_no := 'SRC' || LPAD((i * 2 + 100000)::TEXT, 7, '0');
@@ -93,7 +93,7 @@ BEGIN
         -- RangeDuration 规则: tag_value > threshold, DurationSecond 差异化
         rule_no := 'RUL' || LPAD((i + 200000)::TEXT, 7, '0');
         INSERT INTO ssmcrulerandurmst (ridur_no, statuslin_cod, status_no, related_no, enable_flag, left_id, symbol_flag, right_id, duration_cnt, fstusr_dtm, lstusr_dtm, valid_sta, org_no)
-        VALUES (rule_no, 'satisfiled', '88a2ff2f827f487e83bda61736ca3ad1', monitor_no, true, 'tag_value', 1, 'threshold', duration_val, NOW(), NOW(), 'A', -1);
+        VALUES (rule_no, 'satisfiled', '39edc1419d86d38933a57f1e156b4991', monitor_no, true, 'tag_value', 1, 'threshold', duration_val, NOW(), NOW(), 'A', -1);
 
         i := i + 1;
     END LOOP;

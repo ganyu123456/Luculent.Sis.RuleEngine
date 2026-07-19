@@ -27,6 +27,16 @@ public class RedisAlarmWriter : IAlarmWriter, IDisposable
         _logger = logger;
     }
 
+    /// <summary>
+    /// 测试用构造函数，直接注入 IDatabase 绕过 ConnectionMultiplexer。
+    /// </summary>
+    public RedisAlarmWriter(IDatabase database, ILogger<RedisAlarmWriter> logger)
+    {
+        _redis = null!;
+        _db = database;
+        _logger = logger;
+    }
+
     public bool IsConnected => _redis.IsConnected;
 
     public async Task WriteRealtimeAlarmAsync(AlarmSnapshot alarm)
@@ -134,6 +144,7 @@ public class RedisAlarmWriter : IAlarmWriter, IDisposable
 
         // Step 3: Pipeline 批量 HGET status_key (每批 1000)
         var result = new Dictionary<string, string?>();
+        var expiredIds = new HashSet<string>();
         const int batchSize = 1000;
 
         for (int i = 0; i < activeRequested.Count; i += batchSize)
@@ -146,13 +157,24 @@ public class RedisAlarmWriter : IAlarmWriter, IDisposable
 
             var results = await Task.WhenAll(tasks);
             for (int j = 0; j < batch.Count; j++)
-                result[batch[j]] = results[j].IsNull ? "" : results[j].ToString();
+            {
+                // Hash 已过期 → 清理残留 SET 条目，不纳入结果，留给 ClickHouse 回退处理
+                if (results[j].IsNull)
+                {
+                    await _db.SetRemoveAsync(ActiveAlarmsSetKey, batch[j]);
+                    expiredIds.Add(batch[j]);
+                    continue;
+                }
+
+                result[batch[j]] = results[j].ToString();
+            }
         }
 
         // Step 4: 不在活跃集合中的监视项 → 正常态
+        // Hash 过期的监视项不在此处理，留给 ProductionAlarmWriter 回退 ClickHouse
         foreach (var id in idList)
         {
-            if (!result.ContainsKey(id))
+            if (!result.ContainsKey(id) && !expiredIds.Contains(id))
                 result[id] = "";
         }
 

@@ -58,26 +58,38 @@ public class ProductionAlarmWriter : IAlarmWriter, IAsyncDisposable
 
     public async Task<Dictionary<string, string?>> GetLastEventStatusesAsync(IEnumerable<string> monitorIds)
     {
+        var idList = monitorIds.ToList();
+        var result = new Dictionary<string, string?>();
+
         // 主路径: Redis (活跃报警状态已在内存/Redis 中)
         try
         {
-            return await _realtime.GetLastEventStatusesAsync(monitorIds);
+            result = await _realtime.GetLastEventStatusesAsync(idList);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "从 Redis 恢复状态失败，回退到 ClickHouse");
         }
 
-        // 回退: ClickHouse (Redis 不可用时)
-        try
+        // 回退: ClickHouse — 补全 Redis 未恢复的监视项 (Hash 过期 / 不在活跃 SET)
+        var missingFromRedis = idList.Where(id => !result.ContainsKey(id)).ToList();
+        if (missingFromRedis.Count > 0)
         {
-            return await _history.GetLastEventStatusesAsync(monitorIds);
+            try
+            {
+                var fromClickHouse = await _history.GetLastEventStatusesAsync(missingFromRedis);
+                foreach (var (id, status) in fromClickHouse)
+                    result[id] = status;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "从 ClickHouse 恢复 {Count} 个状态失败，设为空", missingFromRedis.Count);
+                foreach (var id in missingFromRedis)
+                    result[id] = "";
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "从 ClickHouse 恢复状态也失败，返回空状态");
-            return monitorIds.ToDictionary(id => id, _ => (string?)"");
-        }
+
+        return result;
     }
 
     public async ValueTask DisposeAsync()

@@ -124,6 +124,7 @@ public class WorkerCalculationService : BackgroundService
                     {
                         MonitorId = id,
                         PreviousStatus = statusKey ?? "",
+                        PreviousEventId = "recovered", // 标记为非首事件，确保 lastEventName 填充
                     };
                 }
 
@@ -315,8 +316,9 @@ public class WorkerCalculationService : BackgroundService
                 }
 
                 var lastEventId = state.PreviousEventId;
-                var lastEventName = string.IsNullOrEmpty(state.PreviousStatus)
-                    ? null : state.PreviousStatus;
+                var lastEventName = state.PreviousEventId != null
+                    ? (string.IsNullOrEmpty(state.PreviousStatus) ? "normal" : state.PreviousStatus)
+                    : null;
 
                 await _alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
                 {
