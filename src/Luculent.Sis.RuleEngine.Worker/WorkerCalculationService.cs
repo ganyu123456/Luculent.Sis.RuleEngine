@@ -245,6 +245,7 @@ public class WorkerCalculationService : BackgroundService
                     MonitorKey = t.Monitor.Key,
                     MonitorName = t.Monitor.Name,
                     StatusKey = t.NewStatus ?? "",
+                    StatusName = string.IsNullOrEmpty(t.NewStatus) ? null : t.NewStatus,
                     OccurTime = now,
                     TriggerValue = t.TriggerValue,
                     ConfigVersion = t.Monitor.LastModificationTime,

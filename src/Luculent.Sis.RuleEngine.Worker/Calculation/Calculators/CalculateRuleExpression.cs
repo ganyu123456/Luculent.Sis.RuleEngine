@@ -86,10 +86,30 @@ public partial class CalculateRuleExpression : RuleCalculatorBase
 
             if (evalResult)
             {
+                // 获取触发值: 优先取 FocusSource 对应的 TrendDB tag 值
+                double? triggerValue = null;
+                if (!string.IsNullOrEmpty(monitor.FocusSourceId) &&
+                    sourceMap.TryGetValue(monitor.FocusSourceId, out var fsv) && fsv.HasValue)
+                {
+                    triggerValue = fsv.Value;
+                }
+                else
+                {
+                    foreach (var src in monitor.MonitorSources)
+                    {
+                        if (src.SourceType == 3 && sourceMap.TryGetValue(src.Key, out var sv) && sv.HasValue)
+                        {
+                            triggerValue = sv.Value;
+                            break;
+                        }
+                    }
+                }
+
                 return new RuleCalculateResult
                 {
                     State = monitor.RuleOptions?.ExpressionStatusKey ?? "expression_triggered",
                     HasEvent = true,
+                    TriggerValue = triggerValue,
                 };
             }
         }

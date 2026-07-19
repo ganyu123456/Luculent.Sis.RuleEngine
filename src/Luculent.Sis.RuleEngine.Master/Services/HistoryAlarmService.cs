@@ -224,13 +224,14 @@ public class HistoryAlarmService
         _ = new List<object>();
         var conditions = new List<string>();
 
-        if (request.MonitorIds.Count > 0)
+        // ClickHouse max_query_size ≈ 256KB，IN 子句超过 5000 项时跳过此筛选
+        if (request.MonitorIds.Count > 0 && request.MonitorIds.Count <= 5000)
         {
             var ids = string.Join(", ", request.MonitorIds.Select(id => $"'{EscapeSql(id)}'"));
             conditions.Add($"monitor_id IN ({ids})");
         }
 
-        if (request.MonitorKeys?.Count > 0)
+        if (request.MonitorKeys?.Count > 0 && request.MonitorKeys.Count <= 5000)
         {
             var keys = string.Join(", ", request.MonitorKeys.Select(k => $"'{EscapeSql(k)}'"));
             conditions.Add($"monitor_key IN ({keys})");
