@@ -40,6 +40,11 @@ public class WorkerCalculationService : BackgroundService
     private volatile bool _stateRecovered;
     private long _lastStateRecoveryTimeMs;
 
+    private HashSet<string>? _cachedTagNames;
+
+    /// <summary>在 AssignedMonitors 变更后调用，使 tag 缓存失效。</summary>
+    public void InvalidateTagNameCache() => _cachedTagNames = null;
+
     public WorkerCalculationService(
         IStateStore stateStore,
         IAlarmWriter alarmWriter,
@@ -67,6 +72,9 @@ public class WorkerCalculationService : BackgroundService
     /// </summary>
     public HashSet<string> GetAllTagNames()
     {
+        if (_cachedTagNames != null)
+            return _cachedTagNames;
+
         var tags = new HashSet<string>(
             AssignedMonitors.Values
                 .Select(m => m.TagName)
@@ -93,6 +101,7 @@ public class WorkerCalculationService : BackgroundService
                 tags.Add(ruleOpts.WallTemperatureOpts.ReferenceTag);
         }
 
+        _cachedTagNames = tags;
         return tags;
     }
 
@@ -120,8 +129,22 @@ public class WorkerCalculationService : BackgroundService
         return 0;
     }
 
+    private record struct MonitorTransition(
+        MonitorConfig Monitor,
+        CalculationState State,
+        string? NewStatus,
+        List<string>? AlarmStates,
+        double TriggerValue,
+        string? Unit,
+        string? JobId,
+        string? LastEventId,
+        string? LastEventName,
+        double PrevMax,
+        double PrevMin);
+
     /// <summary>
     /// 执行单个计算周期（读取缓存值）。暴露为 public 供测试使用。
+    /// Phase 1: CPU 并行计算 | Phase 2: 批量 I/O 写入（F3 优化）
     /// </summary>
     public async Task<int> RunOneCycleAsync(CancellationToken ct = default)
     {
@@ -142,9 +165,9 @@ public class WorkerCalculationService : BackgroundService
         var preloadedStates = await _stateStore.GetBatchAsync(monitorIds);
 
         // 状态恢复: 缺失的状态从 ClickHouse 查询最后事件恢复
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMsRecover = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var shouldRecover = !_stateRecovered
-            || nowMs - _lastStateRecoveryTimeMs > 30_000;
+            || nowMsRecover - _lastStateRecoveryTimeMs > 30_000;
         if (shouldRecover)
         {
             var missingIds = monitorIds.Where(id => !preloadedStates.ContainsKey(id)).ToList();
@@ -157,7 +180,7 @@ public class WorkerCalculationService : BackgroundService
                     {
                         MonitorId = id,
                         PreviousStatus = statusKey ?? "",
-                        PreviousEventId = "recovered", // 标记为非首事件，确保 lastEventName 填充
+                        PreviousEventId = "recovered",
                     };
                 }
 
@@ -168,18 +191,75 @@ public class WorkerCalculationService : BackgroundService
             }
 
             _stateRecovered = true;
-            _lastStateRecoveryTimeMs = nowMs;
+            _lastStateRecoveryTimeMs = nowMsRecover;
         }
 
+        // ===== Phase 1: CPU 并行计算（不写 I/O）=====
         var modifiedStates = new ConcurrentDictionary<string, CalculationState>();
+        var transitions = new ConcurrentBag<MonitorTransition>();
+        var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
 
         await Parallel.ForEachAsync(dueMonitors,
             new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = ct },
             (m, innerCt) =>
             {
                 preloadedStates.TryGetValue(m.Id, out var preloaded);
-                return new ValueTask(ProcessMonitorAsync(m, values, now, preloaded, modifiedStates, innerCt));
+                ComputeMonitor(m, values, now, preloaded, modifiedStates, transitions);
+                return default;
             });
+
+        // ===== Phase 2: 批量 I/O 写入 =====
+        if (transitions.Count > 0)
+        {
+            var writeTasks = new List<Task>(transitions.Count * 3);
+            foreach (var t in transitions)
+            {
+                if (!string.IsNullOrEmpty(t.NewStatus))
+                {
+                    foreach (var stateKey in t.AlarmStates ?? Enumerable.Empty<string>())
+                    {
+                        if (string.IsNullOrEmpty(stateKey) || stateKey == "PACKAGECOMPLETEEVENT")
+                            continue;
+                        writeTasks.Add(_alarmWriter.WriteRealtimeAlarmAsync(new AlarmSnapshot
+                        {
+                            MonitorId = t.Monitor.Id,
+                            MonitorKey = t.Monitor.Key,
+                            MonitorName = t.Monitor.Name,
+                            StatusKey = stateKey,
+                            StatusName = stateKey,
+                            Value = t.TriggerValue,
+                            OccurTime = now,
+                            ConfigVersion = t.Monitor.LastModificationTime,
+                            WorkerId = WorkerId,
+                        }));
+                    }
+                }
+                else
+                {
+                    writeTasks.Add(_alarmWriter.ClearRealtimeAlarmAsync(t.Monitor.Id));
+                }
+
+                writeTasks.Add(_alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
+                {
+                    MonitorId = t.Monitor.Id,
+                    MonitorKey = t.Monitor.Key,
+                    MonitorName = t.Monitor.Name,
+                    StatusKey = t.NewStatus ?? "",
+                    OccurTime = now,
+                    TriggerValue = t.TriggerValue,
+                    ConfigVersion = t.Monitor.LastModificationTime,
+                    WorkerId = WorkerId,
+                    Unit = t.Unit,
+                    JobId = t.JobId,
+                    LastEventId = t.LastEventId,
+                    LastEventName = t.LastEventName,
+                    MaxValue = t.PrevMax,
+                    MinValue = t.PrevMin,
+                }));
+            }
+
+            await Task.WhenAll(writeTasks);
+        }
 
         if (!modifiedStates.IsEmpty)
         {
@@ -274,18 +354,18 @@ public class WorkerCalculationService : BackgroundService
         }
     }
 
-    private async Task ProcessMonitorAsync(
+    private void ComputeMonitor(
         MonitorConfig monitor,
         IDictionary<string, double?> values,
         DateTime now,
         CalculationState? preloadedState,
         ConcurrentDictionary<string, CalculationState> modifiedStates,
-        CancellationToken ct)
+        ConcurrentBag<MonitorTransition> transitions)
     {
         try
         {
             // ① 前置规则检查
-            var preruleResult = await _prerule.CheckAsync(monitor);
+            var preruleResult = _prerule.CheckAsync(monitor).GetAwaiter().GetResult();
             if (preruleResult.ShouldSuppress)
             {
                 if (preruleResult.ShouldClearAlarm)
@@ -294,34 +374,26 @@ public class WorkerCalculationService : BackgroundService
                         ?? new CalculationState { MonitorId = monitor.Id };
                     if (!string.IsNullOrEmpty(preruleState.PreviousStatus))
                     {
-                        await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
-
                         var lastEventId = preruleState.PreviousEventId;
                         var lastEventName = string.IsNullOrEmpty(preruleState.PreviousStatus)
                             ? null : preruleState.PreviousStatus;
                         var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
-
                         var preruleUnit = monitor.MonitorSources
                             .FirstOrDefault(s => s.Key == monitor.FocusSourceId)?.Unit
                             ?? monitor.MonitorSources.FirstOrDefault()?.Unit;
 
-                        await _alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
-                        {
-                            MonitorId = monitor.Id,
-                            MonitorKey = monitor.Key,
-                            MonitorName = monitor.Name,
-                            StatusKey = "",
-                            OccurTime = now,
-                            TriggerValue = GetCurrentTagValue(monitor, values),
-                            ConfigVersion = monitor.LastModificationTime,
-                            WorkerId = WorkerId,
-                            Unit = preruleUnit,
-                            JobId = $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
-                            LastEventId = lastEventId,
-                            LastEventName = lastEventName,
-                            MaxValue = preruleState.MaxValue,
-                            MinValue = preruleState.MinValue,
-                        });
+                        transitions.Add(new MonitorTransition(
+                            monitor,
+                            preruleState,
+                            "",
+                            null,
+                            GetCurrentTagValue(monitor, values),
+                            preruleUnit,
+                            $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
+                            lastEventId,
+                            lastEventName,
+                            preruleState.MaxValue,
+                            preruleState.MinValue));
 
                         preruleState.PreviousEventOccurTimeMs = nowMs;
                         preruleState.PreviousEventId = $"{monitor.Id}_{nowMs}_trigger";
@@ -337,7 +409,7 @@ public class WorkerCalculationService : BackgroundService
             }
 
             // ② 规则计算
-            var result = await _dispatcher.CalculateAsync(monitor, values, now);
+            var result = _dispatcher.CalculateAsync(monitor, values, now).GetAwaiter().GetResult();
             var state = preloadedState
                 ?? new CalculationState { MonitorId = monitor.Id, PreviousStatus = "" };
 
@@ -347,51 +419,24 @@ public class WorkerCalculationService : BackgroundService
                 .FirstOrDefault(s => s.Key == monitor.FocusSourceId)?.Unit
                 ?? monitor.MonitorSources.FirstOrDefault()?.Unit;
 
-            // ③ 状态变更 → 写入实时报警 + 历史事件
-            // 实时报警只在状态变化时写入，保留报警开始时间
+            // ③ 状态变更 → 记录 transition（I/O 在 Phase 2 批量执行）
             if (newStatus != state.PreviousStatus)
             {
                 var prevMax = state.MaxValue;
                 var prevMin = state.MinValue;
                 var currentValue = result.TriggerValue ?? 0;
 
-                // 初始化新状态的 max/min
                 state.MaxValue = currentValue;
                 state.MinValue = currentValue;
 
-                if (result.HasEvent)
-                {
-                    var alarmStates = new List<string>();
-                    if (!string.IsNullOrEmpty(result.State))
-                        alarmStates.Add(result.State);
-                    if (result.States.Count > 0)
-                        alarmStates.AddRange(result.States);
-                    if (result.StatesDic.Count > 0)
-                        alarmStates.AddRange(result.StatesDic.Keys);
-
-                    foreach (var stateKey in alarmStates)
-                    {
-                        if (string.IsNullOrEmpty(stateKey) || stateKey == "PACKAGECOMPLETEEVENT")
-                            continue;
-
-                        await _alarmWriter.WriteRealtimeAlarmAsync(new AlarmSnapshot
-                        {
-                            MonitorId = monitor.Id,
-                            MonitorKey = monitor.Key,
-                            MonitorName = monitor.Name,
-                            StatusKey = stateKey,
-                            StatusName = stateKey,
-                            Value = result.TriggerValue ?? 0,
-                            OccurTime = now,
-                            ConfigVersion = monitor.LastModificationTime,
-                            WorkerId = WorkerId,
-                        });
-                    }
-                }
-                else
-                {
-                    await _alarmWriter.ClearRealtimeAlarmAsync(monitor.Id);
-                }
+                var alarmStates = result.HasEvent
+                    ? new List<string> { result.State ?? "" }
+                        .Concat(result.States)
+                        .Concat(result.StatesDic.Keys)
+                        .Where(k => !string.IsNullOrEmpty(k) && k != "PACKAGECOMPLETEEVENT")
+                        .Distinct()
+                        .ToList()
+                    : null;
 
                 var lastEventId = state.PreviousEventId;
                 var lastEventName = state.PreviousEventId != null
@@ -401,23 +446,18 @@ public class WorkerCalculationService : BackgroundService
                 var triggerValue = result.TriggerValue
                     ?? GetCurrentTagValue(monitor, values);
 
-                await _alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
-                {
-                    MonitorId = monitor.Id,
-                    MonitorKey = monitor.Key,
-                    MonitorName = monitor.Name,
-                    StatusKey = newStatus,
-                    OccurTime = now,
-                    TriggerValue = triggerValue,
-                    ConfigVersion = monitor.LastModificationTime,
-                    WorkerId = WorkerId,
-                    Unit = unit,
-                    JobId = $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
-                    LastEventId = lastEventId,
-                    LastEventName = lastEventName,
-                    MaxValue = prevMax,
-                    MinValue = prevMin,
-                });
+                transitions.Add(new MonitorTransition(
+                    monitor,
+                    state,
+                    newStatus,
+                    alarmStates,
+                    triggerValue,
+                    unit,
+                    $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
+                    lastEventId,
+                    lastEventName,
+                    prevMax,
+                    prevMin));
 
                 var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
                 state.PreviousEventOccurTimeMs = nowMs;
@@ -427,21 +467,11 @@ public class WorkerCalculationService : BackgroundService
             }
             else
             {
-                // 状态未变 → 更新当前段极值
                 var currentValue = result.TriggerValue ?? 0;
                 var changed = false;
-                if (currentValue > state.MaxValue)
-                {
-                    state.MaxValue = currentValue;
-                    changed = true;
-                }
-                if (currentValue < state.MinValue)
-                {
-                    state.MinValue = currentValue;
-                    changed = true;
-                }
-                if (changed)
-                    modifiedStates[monitor.Id] = state;
+                if (currentValue > state.MaxValue) { state.MaxValue = currentValue; changed = true; }
+                if (currentValue < state.MinValue) { state.MinValue = currentValue; changed = true; }
+                if (changed) modifiedStates[monitor.Id] = state;
             }
 
             monitor.LastCalculateTime = now;

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using DynamicExpresso;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Microsoft.Extensions.Logging;
 
@@ -7,111 +8,95 @@ namespace Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
 
 /// <summary>
 /// 表达式规则计算器。对标 MonitorCenter 的 CalculateRuleExpression。
-/// 支持变量替换和表达式求值，返回表达式结果对应的状态键。
+/// 基于 DynamicExpresso 引擎，支持 Math.* 函数族，表达式缓存，零分配变量替换。
 /// </summary>
 public partial class CalculateRuleExpression : RuleCalculatorBase
 {
+    // 单例 Interpreter，表达式解析结果缓存于 DynamicExpresso 内部
+    private static readonly Interpreter Interpreter = new(
+        InterpreterOptions.DefaultCaseInsensitive);
+
+    // 系统命名空间前缀 — 这些不是变量名
+    private static readonly HashSet<string> SystemNamespaces = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Math", "WAS", "SISAI", "IM", "IC", "MathE", "SuShine",
+    };
+
+    // C# 关键字，不应被当作变量名处理
+    private static readonly HashSet<string> ReservedWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "true", "false", "null",
+    };
+
     public CalculateRuleExpression(ILogger<CalculateRuleExpression> logger) : base(logger) { }
 
     public RuleCalculateResult Calculate(MonitorConfig monitor, IDictionary<string, double?> data)
     {
-        var result = new RuleCalculateResult();
+        var script = monitor.RuleOptions?.ExpressionScript;
+        if (string.IsNullOrWhiteSpace(script))
+            return RuleCalculateResult.Empty();
 
         try
         {
-            var script = monitor.RuleOptions?.ExpressionScript;
-            if (string.IsNullOrWhiteSpace(script))
-                return RuleCalculateResult.Empty();
-
-            // F1 修复: 先解析表达式中的变量名，只替换实际出现的变量
-            var expression = script;
-            var usedVars = VariableRegex().Matches(script)
+            // Step 1: 从表达式提取候选变量名（只处理实际出现的，避免 F1 全量遍历）
+            var candidates = VariableRegex().Matches(script)
                 .Select(m => m.Value)
-                .Where(v => !IsKeyword(v))
+                .Where(v => !IsSystemCall(v) && !ReservedWords.Contains(v))
                 .Distinct()
                 .ToList();
 
-            foreach (var tag in usedVars)
+            // Step 2: 处理含点号的 tag 名 → 安全标识符
+            var expr = script;
+            var dottedMap = new Dictionary<string, string>(); // original → safeName
+            var counter = 0;
+            foreach (var name in candidates.Where(n => n.Contains('.')))
             {
-                if (data.TryGetValue(tag, out var val) && val.HasValue)
-                    expression = expression.Replace(tag,
-                        val.Value.ToString(CultureInfo.InvariantCulture));
+                if (!data.ContainsKey(name)) continue;
+
+                var safeName = $"__v{counter++}";
+                dottedMap[name] = safeName;
+                expr = expr.Replace(name, safeName);
             }
 
-            // F2 修复: 用轻量解析替代 DataTable.Compute
-            if (SafeEvaluateExpression(expression))
+            // Step 3: 只设置表达式实际引用的变量
+            var pars = new List<Parameter>(candidates.Count);
+            foreach (var name in candidates)
             {
-                result.State = monitor.RuleOptions?.ExpressionStatusKey ?? "expression_triggered";
-                result.HasEvent = true;
+                if (!data.TryGetValue(name, out var val) || !val.HasValue)
+                    continue;
+
+                var paramName = dottedMap.TryGetValue(name, out var sn) ? sn : name;
+                pars.Add(new Parameter(paramName, val.Value));
+            }
+
+            // Step 4: DynamicExpresso 求值（解析结果缓存，零 GC 压力，F2 消除）
+            // 即使 pars 为空，常量表达式 (如 "100 > 50" 或 "true") 也应正常求值
+            var evalResult = Interpreter.Eval<bool>(expr, pars.ToArray());
+
+            if (evalResult)
+            {
+                return new RuleCalculateResult
+                {
+                    State = monitor.RuleOptions?.ExpressionStatusKey ?? "expression_triggered",
+                    HasEvent = true,
+                };
             }
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "表达式规则计算异常 MonitorId={MonitorId}", monitor.Id);
-            result.IsSuccess = false;
-            result.Logs.Add(ex.Message);
+            return new RuleCalculateResult { IsSuccess = false, Logs = { ex.Message } };
         }
 
-        return result;
+        return RuleCalculateResult.Empty();
     }
 
-    private static readonly HashSet<string> Keywords = new(StringComparer.OrdinalIgnoreCase)
+    private static bool IsSystemCall(string identifier)
     {
-        "and", "or", "not", "true", "false", "if", "iif",
-    };
-
-    private static bool IsKeyword(string s) => Keywords.Contains(s);
+        return SystemNamespaces.Any(ns =>
+            identifier.StartsWith(ns + ".", StringComparison.OrdinalIgnoreCase));
+    }
 
     [GeneratedRegex(@"[a-zA-Z_][\w.]*")]
     private static partial Regex VariableRegex();
-
-    /// <summary>轻量布尔表达式求值，替代 DataTable.Compute。</summary>
-    private static bool SafeEvaluateExpression(string expr)
-    {
-        expr = expr.Trim();
-
-        // 处理 && 和 || 组合
-        if (expr.Contains("&&"))
-        {
-            var parts = expr.Split("&&", 2);
-            return SafeEvaluateExpression(parts[0]) && SafeEvaluateExpression(parts[1]);
-        }
-        if (expr.Contains("||"))
-        {
-            var parts = expr.Split("||", 2);
-            return SafeEvaluateExpression(parts[0]) || SafeEvaluateExpression(parts[1]);
-        }
-
-        // 处理简单比较表达式: a > b, a < b, a >= b, a <= b, a == b, a != b
-        var match = ComparisonRegex().Match(expr);
-        if (!match.Success)
-        {
-            // 尝试解析为纯数字（0=false, 非0=true）
-            if (double.TryParse(expr, NumberStyles.Float, CultureInfo.InvariantCulture, out var num))
-                return num != 0;
-            return false;
-        }
-
-        var leftStr = match.Groups[1].Value.Trim();
-        var op = match.Groups[2].Value;
-        var rightStr = match.Groups[3].Value.Trim();
-
-        if (!double.TryParse(leftStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var left) ||
-            !double.TryParse(rightStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var right))
-            return false;
-
-        return op switch
-        {
-            ">" => left > right,
-            ">=" => left >= right,
-            "<" => left < right,
-            "<=" => left <= right,
-            "==" => Math.Abs(left - right) < 0.0001,
-            "!=" => Math.Abs(left - right) >= 0.0001,
-            _ => false,
-        };
-    }
-
-    [GeneratedRegex(@"^\s*([\d.-]+)\s*(>=|<=|!=|==|>|<)\s*([\d.-]+)\s*$")]
-    private static partial Regex ComparisonRegex();
 }

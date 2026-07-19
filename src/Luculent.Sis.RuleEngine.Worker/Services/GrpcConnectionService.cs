@@ -212,6 +212,8 @@ public class GrpcConnectionService : IAsyncDisposable
             foreach (var id in removed)
                 _calcService.AssignedMonitors.TryRemove(id, out _);
 
+            _calcService.InvalidateTagNameCache();
+
             _logger.LogInformation(
                 "Worker {WorkerId} 配置更新: {Count} 监视项 (+{Added} -{Removed})",
                 _workerId, monitors.Count, added.Count, removed.Count);
