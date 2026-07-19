@@ -23,34 +23,26 @@ public partial class CalculateRuleExpression : RuleCalculatorBase
             if (string.IsNullOrWhiteSpace(script))
                 return RuleCalculateResult.Empty();
 
-            // 用词边界替换标签名为实际值（避免子串匹配问题）
+            // F1 修复: 先解析表达式中的变量名，只替换实际出现的变量
             var expression = script;
-            foreach (var (tag, value) in data)
+            var usedVars = VariableRegex().Matches(script)
+                .Select(m => m.Value)
+                .Where(v => !IsKeyword(v))
+                .Distinct()
+                .ToList();
+
+            foreach (var tag in usedVars)
             {
-                if (!value.HasValue) continue;
-                // 使用正则确保词边界匹配
-                var pattern = $@"\b{Regex.Escape(tag)}\b";
-                expression = Regex.Replace(expression, pattern,
-                    value.Value.ToString(CultureInfo.InvariantCulture));
+                if (data.TryGetValue(tag, out var val) && val.HasValue)
+                    expression = expression.Replace(tag,
+                        val.Value.ToString(CultureInfo.InvariantCulture));
             }
 
-            // 尝试用 DataTable 求布尔表达式
-            try
+            // F2 修复: 用轻量解析替代 DataTable.Compute
+            if (SafeEvaluateExpression(expression))
             {
-                var dt = new System.Data.DataTable();
-                var evaluated = dt.Compute(expression, null);
-
-                if (evaluated is bool boolResult && boolResult)
-                {
-                    // 使用配置的状态键（不直接使用表达式文本）
-                    result.State = monitor.RuleOptions?.ExpressionStatusKey ?? "expression_triggered";
-                    result.HasEvent = true;
-                }
-            }
-            catch (System.Data.EvaluateException ex)
-            {
-                result.Logs.Add($"表达式计算失败: {expression} — {ex.Message}");
-                result.IsSuccess = false;
+                result.State = monitor.RuleOptions?.ExpressionStatusKey ?? "expression_triggered";
+                result.HasEvent = true;
             }
         }
         catch (Exception ex)
@@ -62,4 +54,64 @@ public partial class CalculateRuleExpression : RuleCalculatorBase
 
         return result;
     }
+
+    private static readonly HashSet<string> Keywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "and", "or", "not", "true", "false", "if", "iif",
+    };
+
+    private static bool IsKeyword(string s) => Keywords.Contains(s);
+
+    [GeneratedRegex(@"[a-zA-Z_][\w.]*")]
+    private static partial Regex VariableRegex();
+
+    /// <summary>轻量布尔表达式求值，替代 DataTable.Compute。</summary>
+    private static bool SafeEvaluateExpression(string expr)
+    {
+        expr = expr.Trim();
+
+        // 处理 && 和 || 组合
+        if (expr.Contains("&&"))
+        {
+            var parts = expr.Split("&&", 2);
+            return SafeEvaluateExpression(parts[0]) && SafeEvaluateExpression(parts[1]);
+        }
+        if (expr.Contains("||"))
+        {
+            var parts = expr.Split("||", 2);
+            return SafeEvaluateExpression(parts[0]) || SafeEvaluateExpression(parts[1]);
+        }
+
+        // 处理简单比较表达式: a > b, a < b, a >= b, a <= b, a == b, a != b
+        var match = ComparisonRegex().Match(expr);
+        if (!match.Success)
+        {
+            // 尝试解析为纯数字（0=false, 非0=true）
+            if (double.TryParse(expr, NumberStyles.Float, CultureInfo.InvariantCulture, out var num))
+                return num != 0;
+            return false;
+        }
+
+        var leftStr = match.Groups[1].Value.Trim();
+        var op = match.Groups[2].Value;
+        var rightStr = match.Groups[3].Value.Trim();
+
+        if (!double.TryParse(leftStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var left) ||
+            !double.TryParse(rightStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var right))
+            return false;
+
+        return op switch
+        {
+            ">" => left > right,
+            ">=" => left >= right,
+            "<" => left < right,
+            "<=" => left <= right,
+            "==" => Math.Abs(left - right) < 0.0001,
+            "!=" => Math.Abs(left - right) >= 0.0001,
+            _ => false,
+        };
+    }
+
+    [GeneratedRegex(@"^\s*([\d.-]+)\s*(>=|<=|!=|==|>|<)\s*([\d.-]+)\s*$")]
+    private static partial Regex ComparisonRegex();
 }

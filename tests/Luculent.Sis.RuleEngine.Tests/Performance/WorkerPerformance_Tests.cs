@@ -107,7 +107,7 @@ public class WorkerPerformance_Tests
         var preruleEval = new PreruleEvaluationService(
             preruleDefStore,
             preruleStateStore,
-            trendReader,
+            tagValues,
             loggerFactory.CreateLogger<PreruleEvaluationService>());
         var prerule = new PrerulePipeline(
             preruleStateStore,
@@ -121,6 +121,8 @@ public class WorkerPerformance_Tests
             prerule,
             preruleEval,
             tagValues,
+            preruleStateStore,
+            null,
             loggerFactory.CreateLogger<WorkerCalculationService>())
         {
             WorkerId = "perf-test-worker",

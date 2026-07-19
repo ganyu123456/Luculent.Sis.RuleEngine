@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
+using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
 using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
 
@@ -16,18 +17,18 @@ public partial class PreruleEvaluationService
 {
     private readonly PreruleDefinitionStore _defStore;
     private readonly PreruleStateStore _stateStore;
-    private readonly ITrendDataReader _trendReader;
+    private readonly TagValueStore _tagValues;
     private readonly ILogger<PreruleEvaluationService> _logger;
 
     public PreruleEvaluationService(
         PreruleDefinitionStore defStore,
         PreruleStateStore stateStore,
-        ITrendDataReader trendReader,
+        TagValueStore tagValues,
         ILogger<PreruleEvaluationService> logger)
     {
         _defStore = defStore;
         _stateStore = stateStore;
-        _trendReader = trendReader;
+        _tagValues = tagValues;
         _logger = logger;
     }
 
@@ -45,7 +46,8 @@ public partial class PreruleEvaluationService
             try
             {
                 bool state = await EvaluateOneAsync(def);
-                _stateStore.SetState(def.Id, state);
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                _stateStore.SetState(def.Id, state, nowMs);
                 _logger.LogInformation("前置规则 {Id} = {State}", def.Id, state);
             }
             catch (Exception ex)
@@ -92,38 +94,24 @@ public partial class PreruleEvaluationService
             }
         }
 
-        // RealDB (SourceType=3): SourceKey 是 TrendDB 标签名
+        // RealDB (SourceType=3): 从 TagValueStore 缓存读取，不直接查 TrendDB
+        var cachedValues = _tagValues.Values;
         var realSources = sources.Where(s => s.SourceType == 3).ToList();
         if (realSources.Count > 0)
         {
-            var tagNames = realSources
-                .Select(s => s.SourceKey)
-                .Where(k => !string.IsNullOrEmpty(k))
-                .Distinct()
-                .ToList();
-
-            if (tagNames.Count > 0)
+            foreach (var rs in realSources)
             {
-                try
+                if (string.IsNullOrEmpty(rs.SourceKey)) continue;
+
+                if (cachedValues.TryGetValue(rs.SourceKey, out var val) && val.HasValue)
                 {
-                    var values = await _trendReader.ReadBatchAsync(tagNames);
-                    foreach (var (tagName, value) in values)
-                    {
-                        if (!value.HasValue) continue;
-
-                        result[tagName] = value.Value;
-
-                        // 同时存储别名映射，让 EvaluateExpression 和 EvaluateRangeDuration 都能查到
-                        foreach (var rs in realSources.Where(s => s.SourceKey == tagName))
-                        {
-                            if (!string.IsNullOrEmpty(rs.Key))
-                                result[rs.Key] = value.Value;
-                        }
-                    }
+                    result[rs.SourceKey] = val.Value;
+                    if (!string.IsNullOrEmpty(rs.Key))
+                        result[rs.Key] = val.Value;
                 }
-                catch (Exception ex)
+                else
                 {
-                    _logger.LogWarning(ex, "前置规则 RealDB 数据源读取失败");
+                    _logger.LogWarning("前置规则 RealDB 数据源 {TagName} 不在 TagValueStore 中", rs.SourceKey);
                 }
             }
         }

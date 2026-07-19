@@ -7,6 +7,7 @@ using Luculent.Sis.RuleEngine.Worker.DataSource;
 using Luculent.Sis.RuleEngine.Worker.Services;
 using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
 using Luculent.Sis.RuleEngine.Worker.Storage;
+using StackExchange.Redis;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -30,6 +31,12 @@ builder.Services.AddSingleton<IStateStore, InMemoryStateStore>();
 // ===== 报警写入 =====
 var redisConn = builder.Configuration.GetValue<string>("REDIS_CONNECTION");
 var clickhouseConn = builder.Configuration.GetValue<string>("CLICKHOUSE_CONNECTION");
+
+if (!string.IsNullOrEmpty(redisConn))
+{
+    builder.Services.AddSingleton<ConnectionMultiplexer>(_ =>
+        ConnectionMultiplexer.Connect(redisConn));
+}
 
 if (!string.IsNullOrEmpty(redisConn) && !string.IsNullOrEmpty(clickhouseConn))
 {

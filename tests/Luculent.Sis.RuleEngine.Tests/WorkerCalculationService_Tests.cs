@@ -25,6 +25,9 @@ public class WorkerCalculationService_Tests
         _dispatcherMock = new Mock<IRuleDispatcher>();
         _preruleMock = new Mock<IPrerulePipeline>();
 
+        var preruleStateStore = new PreruleStateStore();
+        var tagValueStore = new TagValueStore();
+
         _service = new WorkerCalculationService(
             _stateStoreMock.Object,
             _alarmWriterMock.Object,
@@ -32,10 +35,12 @@ public class WorkerCalculationService_Tests
             _preruleMock.Object,
             new PreruleEvaluationService(
                 new PreruleDefinitionStore(),
-                new PreruleStateStore(),
-                Mock.Of<ITrendDataReader>(),
+                preruleStateStore,
+                tagValueStore,
                 Mock.Of<ILogger<PreruleEvaluationService>>()),
-            new TagValueStore(),
+            tagValueStore,
+            preruleStateStore,
+            null,
             Mock.Of<ILogger<WorkerCalculationService>>())
         {
             WorkerId = "test-worker"

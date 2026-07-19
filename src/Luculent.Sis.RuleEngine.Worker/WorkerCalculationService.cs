@@ -1,9 +1,12 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
 using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
+using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
+using StackExchange.Redis;
 
 namespace Luculent.Sis.RuleEngine.Worker;
 
@@ -23,6 +26,8 @@ public class WorkerCalculationService : BackgroundService
     private readonly PreruleEvaluationService _preruleEval;
     private readonly TagValueStore _tagValues;
     private readonly ILogger<WorkerCalculationService> _logger;
+    private readonly PreruleStateStore _preruleStateStore;
+    private readonly ConnectionMultiplexer? _redis;
     private readonly SemaphoreSlim _cycleLock = new(1, 1);
 
     /// <summary>
@@ -42,6 +47,8 @@ public class WorkerCalculationService : BackgroundService
         IPrerulePipeline prerule,
         PreruleEvaluationService preruleEval,
         TagValueStore tagValues,
+        PreruleStateStore preruleStateStore,
+        ConnectionMultiplexer? redis,
         ILogger<WorkerCalculationService> logger)
     {
         _stateStore = stateStore;
@@ -50,6 +57,8 @@ public class WorkerCalculationService : BackgroundService
         _prerule = prerule;
         _preruleEval = preruleEval;
         _tagValues = tagValues;
+        _preruleStateStore = preruleStateStore;
+        _redis = redis;
         _logger = logger;
     }
 
@@ -85,6 +94,30 @@ public class WorkerCalculationService : BackgroundService
         }
 
         return tags;
+    }
+
+    /// <summary>
+    /// 从当前采集数据中获取监视项的实际传感器值。
+    /// </summary>
+    private static double GetCurrentTagValue(MonitorConfig monitor, IDictionary<string, double?> values)
+    {
+        var ruleOpts = monitor.RuleOptions;
+        if (ruleOpts?.RangeDurationRules != null)
+        {
+            foreach (var r in ruleOpts.RangeDurationRules)
+            {
+                if (!string.IsNullOrEmpty(r.LeftTagName)
+                    && values.TryGetValue(r.LeftTagName, out var v)
+                    && v.HasValue)
+                    return v.Value;
+            }
+        }
+        if (!string.IsNullOrEmpty(monitor.TagName)
+            && values.TryGetValue(monitor.TagName, out var tagVal)
+            && tagVal.HasValue)
+            return tagVal.Value;
+
+        return 0;
     }
 
     /// <summary>
@@ -170,6 +203,7 @@ public class WorkerCalculationService : BackgroundService
                 try
                 {
                     await _preruleEval.EvaluateAllAsync(ct);
+                    await WritePreruleStatesToRedisAsync();
                 }
                 catch (Exception ex)
                 {
@@ -215,6 +249,31 @@ public class WorkerCalculationService : BackgroundService
         _logger.LogInformation("Worker 计算服务停止");
     }
 
+    private const string PreruleStatesHashKey = "ruleengine:prerule_states";
+
+    private async Task WritePreruleStatesToRedisAsync()
+    {
+        if (_redis == null) return;
+
+        try
+        {
+            var states = _preruleStateStore.GetAllStatesWithTime();
+            var db = _redis.GetDatabase();
+            var batch = new List<Task>();
+            foreach (var (id, (state, timeMs)) in states)
+            {
+                var json = JsonSerializer.Serialize(
+                    new { s = state, t = timeMs });
+                batch.Add(db.HashSetAsync(PreruleStatesHashKey, id, json));
+            }
+            await Task.WhenAll(batch);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "写入前置规则状态到 Redis 失败");
+        }
+    }
+
     private async Task ProcessMonitorAsync(
         MonitorConfig monitor,
         IDictionary<string, double?> values,
@@ -242,6 +301,10 @@ public class WorkerCalculationService : BackgroundService
                             ? null : preruleState.PreviousStatus;
                         var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
 
+                        var preruleUnit = monitor.MonitorSources
+                            .FirstOrDefault(s => s.Key == monitor.FocusSourceId)?.Unit
+                            ?? monitor.MonitorSources.FirstOrDefault()?.Unit;
+
                         await _alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
                         {
                             MonitorId = monitor.Id,
@@ -249,8 +312,11 @@ public class WorkerCalculationService : BackgroundService
                             MonitorName = monitor.Name,
                             StatusKey = "",
                             OccurTime = now,
+                            TriggerValue = GetCurrentTagValue(monitor, values),
                             ConfigVersion = monitor.LastModificationTime,
                             WorkerId = WorkerId,
+                            Unit = preruleUnit,
+                            JobId = $"{WorkerId}_{monitor.Key}_{now:yyyyMMddHHmmss}",
                             LastEventId = lastEventId,
                             LastEventName = lastEventName,
                             MaxValue = preruleState.MaxValue,
@@ -329,8 +395,11 @@ public class WorkerCalculationService : BackgroundService
 
                 var lastEventId = state.PreviousEventId;
                 var lastEventName = state.PreviousEventId != null
-                    ? (string.IsNullOrEmpty(state.PreviousStatus) ? "normal" : state.PreviousStatus)
+                    ? (string.IsNullOrEmpty(state.PreviousStatus) ? "" : state.PreviousStatus)
                     : null;
+
+                var triggerValue = result.TriggerValue
+                    ?? GetCurrentTagValue(monitor, values);
 
                 await _alarmWriter.WriteHistoryAlarmAsync(new AlarmEvent
                 {
@@ -339,7 +408,7 @@ public class WorkerCalculationService : BackgroundService
                     MonitorName = monitor.Name,
                     StatusKey = newStatus,
                     OccurTime = now,
-                    TriggerValue = result.TriggerValue ?? 0,
+                    TriggerValue = triggerValue,
                     ConfigVersion = monitor.LastModificationTime,
                     WorkerId = WorkerId,
                     Unit = unit,

@@ -1,6 +1,6 @@
-using Luculent.Sis.RuleEngine.Shared.Interfaces;
 using Luculent.Sis.RuleEngine.Shared.Models;
 using Luculent.Sis.RuleEngine.Worker.Calculation;
+using Luculent.Sis.RuleEngine.Worker.DataAcquisition;
 using Luculent.Sis.RuleEngine.Worker.Storage;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -11,18 +11,18 @@ public class PreruleEvaluationService_Tests
 {
     private readonly PreruleDefinitionStore _defStore;
     private readonly PreruleStateStore _stateStore;
-    private readonly Mock<ITrendDataReader> _trendReaderMock;
+    private readonly TagValueStore _tagValues;
     private readonly PreruleEvaluationService _service;
 
     public PreruleEvaluationService_Tests()
     {
         _defStore = new PreruleDefinitionStore();
         _stateStore = new PreruleStateStore();
-        _trendReaderMock = new Mock<ITrendDataReader>();
+        _tagValues = new TagValueStore();
         _service = new PreruleEvaluationService(
             _defStore,
             _stateStore,
-            _trendReaderMock.Object,
+            _tagValues,
             Mock.Of<ILogger<PreruleEvaluationService>>());
     }
 
@@ -348,7 +348,7 @@ public class PreruleEvaluationService_Tests
     [Fact]
     public async Task FetchSourceData_StaticSource_ParsesSourceKeyDirectly()
     {
-        _trendReaderMock.Reset();
+        // Static sources do NOT require TagValueStore entries
 
         LoadDef(new PreruleDefinition
         {
@@ -364,17 +364,12 @@ public class PreruleEvaluationService_Tests
 
         await _service.EvaluateAllAsync();
         Assert.True(_stateStore.GetState("prerule-static"));
-
-        // Static sources should NOT call TrendDB
-        _trendReaderMock.Verify(x => x.ReadBatchAsync(It.IsAny<IEnumerable<string>>()), Times.Never);
     }
 
     [Fact]
-    public async Task FetchSourceData_RealDB_UsesSourceKeyAsTagName()
+    public async Task FetchSourceData_RealDB_UsesTagValueStoreCache()
     {
-        _trendReaderMock
-            .Setup(x => x.ReadBatchAsync(It.IsAny<IEnumerable<string>>()))
-            .ReturnsAsync(new Dictionary<string, double?> { ["TAG_001"] = 75.0 });
+        _tagValues.Update(new Dictionary<string, double?> { ["TAG_001"] = 75.0 });
 
         LoadDef(new PreruleDefinition
         {
@@ -390,18 +385,12 @@ public class PreruleEvaluationService_Tests
 
         await _service.EvaluateAllAsync();
         Assert.True(_stateStore.GetState("prerule-realdb"));
-
-        // SourceKey (not Key/alias) should be used as TrendDB tag name
-        _trendReaderMock.Verify(x => x.ReadBatchAsync(It.Is<IEnumerable<string>>(
-            keys => keys.Contains("TAG_001"))), Times.Once);
     }
 
     [Fact]
-    public async Task FetchSourceData_RealDBFailure_ReturnsFalse()
+    public async Task FetchSourceData_RealDBMissingTag_ReturnsFalse()
     {
-        _trendReaderMock
-            .Setup(x => x.ReadBatchAsync(It.IsAny<IEnumerable<string>>()))
-            .ThrowsAsync(new Exception("TrendDB down"));
+        // TAG is not in TagValueStore → expression can't resolve → false
 
         LoadDef(new PreruleDefinition
         {
@@ -415,7 +404,6 @@ public class PreruleEvaluationService_Tests
             RuleExpression = new PreruleExpressionDefinition { Id = "exp", Code = "temp > 50" },
         });
 
-        // Should not throw — catches and logs
         await _service.EvaluateAllAsync();
         Assert.False(_stateStore.GetState("prerule-fail"));
     }

@@ -7,6 +7,7 @@ using Luculent.Sis.RuleEngine.Worker.Calculation;
 using Luculent.Sis.RuleEngine.Worker.Calculation.Calculators;
 using Luculent.Sis.RuleEngine.Worker.DataSource;
 using Luculent.Sis.RuleEngine.Worker.Storage;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -61,6 +62,12 @@ builder.Services.AddSingleton<IStateStore, InMemoryStateStore>();
 // 报警写入: 跟 Worker 一致，读取环境变量选择后端
 var redisConn = builder.Configuration.GetValue<string>("REDIS_CONNECTION");
 var clickhouseConn = builder.Configuration.GetValue<string>("CLICKHOUSE_CONNECTION");
+if (!string.IsNullOrEmpty(redisConn))
+{
+    builder.Services.AddSingleton<ConnectionMultiplexer>(_ =>
+        ConnectionMultiplexer.Connect(redisConn));
+}
+
 if (!string.IsNullOrEmpty(redisConn) && !string.IsNullOrEmpty(clickhouseConn))
 {
     builder.Services.AddSingleton<IAlarmWriter>(sp =>
@@ -446,6 +453,52 @@ adminGroup.MapPost("/load-prerules", async (HttpRequest request,
     catch (Exception ex)
     {
         logger.LogError(ex, "加载前置规则失败");
+        return Results.Problem(detail: ex.ToString(), statusCode: 500);
+    }
+});
+
+// ===== 前置规则状态查询 =====
+app.MapGet("/api/ruleengine/prerules/states", async (HttpContext httpContext, ILogger<Program> logger) =>
+{
+    try
+    {
+        var conn = httpContext.RequestServices.GetService<ConnectionMultiplexer>();
+        if (conn == null)
+            return Results.Problem(detail: "Redis not configured", statusCode: 503);
+
+        var db = conn.GetDatabase();
+        var hash = await db.HashGetAllAsync("ruleengine:prerule_states");
+
+        var result = new Dictionary<string, object>();
+        foreach (var entry in hash)
+        {
+            var json = entry.Value.ToString();
+            if (!string.IsNullOrEmpty(json))
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+                    result[entry.Name.ToString()] = new
+                    {
+                        state = root.TryGetProperty("s", out var s) ? s.GetBoolean() : false,
+                        lastEvalTime = root.TryGetProperty("t", out var t)
+                            ? DateTimeOffset.FromUnixTimeMilliseconds(t.GetInt64()).UtcDateTime
+                            : (DateTime?)null,
+                    };
+                }
+                catch
+                {
+                    // skip malformed entries
+                }
+            }
+        }
+
+        return Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "读取前置规则状态失败");
         return Results.Problem(detail: ex.ToString(), statusCode: 500);
     }
 });
